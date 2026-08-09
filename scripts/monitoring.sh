@@ -26,6 +26,15 @@ up() {
   # Collector en sona: hedefleri (Tempo, Prometheus) ayakta olsun.
   install_if_missing otel-collector open-telemetry/opentelemetry-collector values-otel-collector.yaml
 
+  # Dashboard'u ConfigMap olarak yukle. Grafana'nin sidecar'i grafana_dashboard etiketli
+  # ConfigMap'leri otomatik aliyor, arayuzden elle import gerekmiyor.
+  echo ">> Dashboard yukleniyor..."
+  kubectl create configmap sre-case-dashboard -n "$NS" \
+    --from-file=dashboard.json="${ROOT_DIR}/grafana/dashboard.json" \
+    --dry-run=client -o yaml \
+    | kubectl label -f- --local -o yaml grafana_dashboard=1 \
+    | kubectl apply -f -
+
   echo
   kubectl get pods -n "$NS"
   echo

@@ -15,8 +15,9 @@ spec:
         name: cpu
         target:
           type: Utilization
-          # 500m'in yarisi = 250m. Pod yari dolunca yenisini ekle.
-          averageUtilization: 50
+          # 500m'in %20'si = 100m. Dusuk tutuldu: 60 saniyede 10 kat trafik alan
+          # bir serviste HPA'yi erken tetiklemek, podlar dolmadan olceklenmeye baslamak icin.
+          averageUtilization: 20
   behavior:
     scaleUp:
       # Spike'ta bekleme, hemen buyu.

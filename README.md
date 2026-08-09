@@ -89,8 +89,8 @@ Image: `selcuksan/sre-case-app:x.y.z`
 `n` iki katına çıkınca süre de tam iki katına çıkıyor, yani ilişki doğrusal. Bunu ölçekleyince
 **n=8.000.000 bir CPU'yu tam bir saniye meşgul ediyor.**
 
-Bu ölçüm yük testinde replica hedefini belirleyecek. Pod'a 1 CPU vereceğiz. `n=200.000`'lik bir
-istek 25 ms CPU yiyorsa, bir pod saniyede 40 istek kaldırır (1000 ms ÷ 25 ms). Saniyede 400 istek gönderirsek HPA'nın 10 pod'a çıkması gerekir. Yani hedef replica sayısını bu hesapla seçiyoruz.
+Bu ölçüm yük testinde replica hedefini belirlemek için kullanıldı: "kaç istek kaç CPU eder"
+sorusunu tahminle değil bu oranla cevapladık. Ayrıntısı Adım 3'te.
 
 ### JVM ve container limitleri
 
@@ -132,7 +132,7 @@ kubectl apply -f k8s/
 |---|---|
 | **requests = limits = 500m CPU / 512Mi** | İkisi eşit olunca pod Guaranteed QoS oluyor, HPA'nın gördüğü kullanım oranı da %100'ü aşamıyor. Ayrıca CPU limiti olmasaydı JVM host'un 10 CPU'sunu görürdü; Adım 2'deki `availableProcessors=1` kanıtı ancak limit varken geçerli. |
 | **minReplicas 1, maxReplicas 10** | 10 × 500m = 5 CPU, host'un yarısı. |
-| **Hedef CPU %50** | 500m'in yarısı, yani 250m. 60 saniyede gelen 10 kat trafiğe yetişmek için pay bırakmak gerekiyor; %80 hedefleseydik HPA geç kalırdı. |
+| **Hedef CPU %20** | 500m'in %20'si, yani 100m. Düşük tuttuk: 60 saniyede 10 kat trafik alan bir serviste HPA'yı erken tetiklemek istiyoruz. Pod'lar dolmadan ölçeklenmeye başlıyoruz — kaynak karşılığında tepki süresi satın alıyoruz. Yüksek bir hedefte (%80 gibi) HPA geç kalır, istekler kuyruklanır. |
 | **scaleUp bekleme süresi 0** | Spike'ta beklemeden büyüsün. |
 | **scaleDown bekleme süresi 120 sn** | Varsayılan 300 sn. 120'ye çektik ki çıkış ve iniş tek grafikte görünsün. |
 | **Probe timeout'ları gevşetildi** | Varsayılan 1 saniye. Yük altında `/health` biraz gecikiyor. |
@@ -149,33 +149,106 @@ kubectl apply -f k8s/
 
 **HPA'nın çalışması için pod'un ready kalması şart.** Yük altında sağlık kontrolünü kaybeden bir servis ölçeklenemez.
 
-### Test ve sonuç
+### Yük modeli: açık çevrim
 
-[loadtest/spike.js](loadtest/spike.js) — normal trafik, 60 saniyede
-10 kat, sonra normale dönüş.
+[loadtest/spike.js](loadtest/spike.js) — baseline, 60 saniyede 10 kat artış, plato, düşüş.
 
 ```bash
 k6 run loadtest/spike.js
 ```
 
-Kullanıcı sayısıyla pod sayısı arasındaki bağ: 20 kullanıcı 1 pod'u %50 dolduruyor, 10 katı olan
-200 kullanıcı da 10 pod eder. Ölçüm sonucu:
+k6'da iki model var ve seçim sonucu değiştiriyor:
+
+| Model | Ne yapar | Gerçekçi mi |
+|---|---|---|
+| Kapalı çevrim (`ramping-vus`) | Sabit sayıda kullanıcı, her biri cevabı bekleyip yeni istek atar | Hayır. Servis yavaşlayınca yük de kendiliğinden azalır. |
+| **Açık çevrim (`ramping-arrival-rate`)** | Saniyede sabit sayıda istek, servisin hızından bağımsız | **Evet.** Kampanya SMS'i giden kullanıcılar senin p95'ine bakıp beklemez. |
+
+Açık çevrimi seçtik. Bir de `thresholds` ekledik (`http_req_failed: rate<0.05`), böylece test
+sadece yük üretmiyor, geçti/kaldı da diyor.
+
+Kapalı çevrimi de denedik ve şu farkı gördük: pod eklendikçe sistem daha çok iş yapıyordu ama
+gecikme düşmüyordu, çünkü kullanıcılar boşalan kapasiteyi anında dolduruyordu. Açık çevrimde istek
+hızı sabit olduğu için pod eklendikçe kuyruk gerçekten eriyor.
+
+### Ölçüm sonucu
 
 | | |
 |---|---|
-| Replica seyri | 1 → 2 → 4 → **7**, yük bitince 7 → 5 → 3 → 2 → 1 |
-| Toplam istek | 10.863 |
+| Replica seyri | 1 → 3 → **10**, yük bitince 10 → 2 → 1 |
+| 1'den 10'a çıkış süresi | ~2 dakika |
+| Toplam istek | 8.519 |
 | Hata oranı | **%0** |
-| Gecikme (p95) | 5,6 sn |
+| Gecikme: medyan / p95 | 29 ms / **217 ms** |
 | Pending pod | **0** — bütün replica'lar Running/Ready |
-| Node dağılımı | Pod'lar iki worker'a da yerleşti |
 
-Ölçekleme hem yukarı hem aşağı çalışıyor ve hiçbir pod Pending'de kalmıyor.
+Gecikme eğrisi hikâyeyi anlatıyor: pod'lar açılırken 300 ms'ye çıktı, 10 pod hazır olunca yük hâlâ
+devam ederken 50 ms'ye indi.
 
-Tepe noktada 10 değil 7 pod'a çıkıldı. Sebebi HPA değil, yük modeli: k6'nın sanal kullanıcıları
-cevabı beklemeden yeni istek göndermiyor. Servis yavaşlayınca gönderilen istek sayısı da düşüyor,
-dolayısıyla CPU talebi 7 pod seviyesinde dengeye geliyor. 10 pod'u görmek için kullanıcı sayısını
-artırmak yeterli.
+### En önemli bulgu: pod açmak yetmiyor, trafiğin de taşınması gerekiyor
+
+İlk açık çevrim testinde tuhaf bir sonuç çıktı. HPA 10 pod açtı, hepsi Ready oldu, ama **gecikme
+düzelmedi** — p95 plato boyunca 4,8 saniyede kaldı. Oysa toplam yük saniyede 36 istekti; 10 pod'un
+bunu rahat karşılaması gerekirdi.
+
+Dashboard'da pod başına dağılıma bakınca sebep çıktı:
+
+```
+pod       CPU     istek/sn
+b2gjj    497m      11,6      <- limitte, tıkalı
+dq8p7    105m       6,8
+7nx4v     99m       3,4
+...
+b9kx4      0m       0,0      <- hiç istek almamış
+jq46j      0m       0,0
+px7q6      0m       0,0
+```
+
+10 pod'dan üçü hiç istek almıyordu, biri tek başına limitine dayanmıştı. p95'teki 4,8 saniye
+tamamen o tıkalı pod'un kuyruğuydu.
+
+**Sebep:** k6 HTTP bağlantılarını yeniden kullanıyor (keep-alive). Kubernetes Service ise L4
+seviyesinde çalışıyor ve dağıtımı **bağlantı bazında** yapıyor, istek bazında değil. Bağlantı
+kurulurken bir pod seçiliyor ve o bağlantıdan gelen bütün istekler ömür boyu o pod'a gidiyor.
+Test başlarken tek pod vardı, bütün bağlantılar ona kuruldu; HPA 9 pod daha açtı ama mevcut
+bağlantılar taşınmadı.
+
+Doğrulamak için `noConnectionReuse: true` ile tekrar çalıştırdık:
+
+| | keep-alive açık | keep-alive kapalı |
+|---|---|---|
+| p95 gecikme | 4.590 ms | **217 ms** |
+| Medyan | 82 ms | 29 ms |
+| En kötü istek | 8,5 sn | 2,65 sn |
+| Pod başına dağılım | 11,6 / 6,8 / ... / 0 / 0 / 0 | 0,7 / 0,7 / 0,6 / 0,6 / 0,3 ... |
+
+21 kat fark. Ölçekleme baştan beri çalışıyordu; çalışmayan şey yük dağıtımıydı.
+
+**Prod'da çözüm `noConnectionReuse` değildir** — o sadece bir test aracı, her istek için yeniden
+bağlantı kurmak gecikmeyi ve CPU'yu artırır. Yapılması gereken:
+
+| Katman | Yapılacak |
+|---|---|
+| Birincil | Servisin önüne istek bazında dağıtım yapan bir L7 katmanı: Ingress controller (nginx, Envoy) veya service mesh. Yeni pod anında pay alır. |
+| Destekleyici | Sunucu tarafında bağlantı ömrünü sınırlamak (`max connection age`). Uzun ömürlü bağlantılar periyodik kopar ve yeniden dağılır. gRPC gibi tek uzun bağlantı kullanan protokollerde bu şart. |
+| İzleme | Pod başına istek/CPU dağılımını dashboard'da tutmak. Biz bunu ancak arayarak bulduk; sürekli görünür olsaydı hemen fark edilirdi. |
+
+### 10 replica'ya ulaşmak için ne gerekti
+
+İlk denemelerde HPA 4-7 pod arasında takılıyordu. Kullanıcı sayısını artırarak çözmeye çalıştım,
+işe yaramadı: kapalı çevrim modelde kullanıcı arttıkça gecikme de arttığı için saniyedeki istek
+sayısı neredeyse sabit kalıyordu. 100 → 200 → 250 kullanıcı denemeleri 4 → 7 → 5 → 6 pod verdi;
+yakınsama değil salınımdı.
+
+Doğru kol HPA'nın kendi formülüydü:
+
+```
+istenen pod = toplam CPU tüketimi / (pod request x HPA hedefi)
+```
+
+Yükle oynamak payı çok az değiştiriyordu. Paydayı değiştirdik: HPA hedefini %50'den %20'ye çektik.
+
+Arada pod'u 200m CPU'ya küçültmeyi de denedik; pod'lar Ready kalamadı, geri alındı.
 
 ## Adım 4 — Observability (OpenTelemetry)
 
@@ -253,5 +326,50 @@ k8s.deployment.name, k8s.container.name, k8s.replicaset.name
 
 Agent uygulamanın açılışını 2,4 saniyeden 5,6 saniyeye çıkardı. Liveness probe'un 20 saniyelik
 başlangıç gecikmesinin içinde kaldığı için bir değişiklik gerekmedi.
+
+## Adım 5 — Grafana Dashboard
+
+Dashboard tanımı: [grafana/dashboard.json](grafana/dashboard.json)
+
+`./scripts/monitoring.sh up` bu dosyayı `grafana_dashboard` etiketli bir ConfigMap'e koyuyor;
+Grafana'nın sidecar'ı otomatik alıyor. Arayüzden elle import yok, repo tek doğru kaynak.
+
+Adres: http://localhost:30300/d/sre-case (admin / admin)
+
+### Panel sırası neden böyle
+
+Case dashboard'un "yük geldi → pod açıldı → latency düzeldi" hikâyesini tek bakışta anlatmasını
+istiyor. Panelleri bu sebep-sonuç zincirine göre sıraladık, yukarıdan aşağı okununca hikâye
+çıkıyor:
+
+| Grup | Panel | Hikâyedeki yeri |
+|---|---|---|
+| **1. Trafik** | İstek hızı (RPS) | Yük geldi |
+| | Gecikme p50/p95/p99 | Tek pod yetişemiyor, p95 sıçrıyor |
+| | Hata oranı | Ölçekleme doğru çalışıyorsa sıfırda kalmalı |
+| **2. Ölçekleme** | Replica: istenen vs hazır | Pod açıldı |
+| | HPA CPU: mevcut vs hedef | HPA'nın kararının sebebi |
+| **3. Container** | Pod başına CPU + limit | Podların gerçekten dolduğu an |
+| **4. JVM** | Heap, GC süresi | Ölçeklemenin JVM tarafındaki etkisi |
+
+Gecikme paneli en kritik olanı: p95'in önce sıçrayıp sonra düşmesi, "latency düzeldi" kısmının
+kanıtı.
+
+### İki panelde özellikle dikkat edilen nokta
+
+**Replica paneli iki çizgi gösteriyor: HPA'nın istediği ve gerçekten Ready olan pod sayısı.**
+Tek çizgi (sadece istenen) gösterseydik, podların Pending'de bekleyip beklemediği görünmezdi.
+İki çizgi arasındaki boşluk pod'un açılıp henüz trafik almaya hazır olmadığı süre; hazır çizgisi
+istenen çizgisini yakalıyorsa case'in "Pending'de bekleyen pod ölçeklenmiş sayılmaz" şartı
+sağlanmış demektir.
+
+**Container CPU panelinde limit ayrı bir kesikli çizgi olarak duruyor.** Kullanımın limite ne kadar
+yaklaştığını göz kararı anlamak yerine doğrudan görüyoruz.
+
+### Hata oranı panelinde bir ayrıntı
+
+Hiç 5xx yokken bölme işlemi boş sonuç veriyor ve panel "No data" yazıyordu — bu, hata olmadığı
+anlamına gelse de yanlış okunmaya açık. Sorguya `or vector(0)` ekledik, artık sıfır çiziyor.
+"Hata yok" ile "veri yok" arasındaki fark bir dashboard'da önemli.
 
 
