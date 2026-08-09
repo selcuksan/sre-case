@@ -1,4 +1,7 @@
 grafana:
+  # Local demo kimlik bilgisi. Cluster disariya acik degil, gercek bir secret degil.
+  # Gercek ortamda bu satir olmaz; chart sifreyi kendisi uretir ve Secret'ta tutar,
+  # ya da External Secrets / Sealed Secrets ile disaridan verilir.
   adminPassword: admin
   service:
     type: NodePort

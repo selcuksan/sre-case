@@ -1,52 +1,88 @@
 # Case
 
-Kubernetes üzerinde çalışan bir Java servisinin yük altında HPA ile ölçeklenmesi, OpenTelemetry ile izlenmesi ve bu ölçekleme davranışının Grafana üzerinden gösterilmesi.
+Kubernetes üzerinde çalışan bir Java servisinin yük altında HPA ile ölçeklenmesi, OpenTelemetry ile
+izlenmesi ve bu ölçekleme davranışının Grafana üzerinden gösterilmesi.
+
+Tasarım kararları, karşılaşılan problemler ve analiz: [REPORT.md](REPORT.md)
 
 ## Ön koşullar
 
-| Araçlar | Not |
+| Araç | Not |
 |---|---|
-| Docker | kind için gerekli |
-| kind | Local Kubernetes cluster için gerekli |
-| kubectl | Kubernetes API erişimi için gerekli |
-| helm | metrics-server, grafana vb. kurulumu için gerekli |
+| Docker | kind için gerekli, çalışır durumda olmalı |
+| kind | Local Kubernetes cluster |
+| kubectl | Kubernetes API erişimi |
+| helm | metrics-server, Prometheus, Grafana, Tempo, OTel Collector kurulumu |
+| k6 | Yük testi |
 
-## Adım 1 — Cluster
+## Sıfırdan çalıştırma
+
+Sıra önemli: monitoring uygulamadan önce kurulmalı, yoksa uygulama açılışta OTel Collector'ü
+bulamaz.
 
 ```bash
-./scripts/cluster.sh up      # cluster + metrics-server kurar
-./scripts/cluster.sh status  # node'lar ve anlık CPU/RAM
-./scripts/cluster.sh down    # cluster'ı siler
+# 1. kind cluster + metrics-server                    (~2 dk)
+./scripts/cluster.sh up
+#    beklenen: 3 node Ready, "kubectl top nodes" veri döndürüyor
+
+# 2. Prometheus, Grafana, Tempo, OTel Collector       (~4 dk)
+./scripts/monitoring.sh up
+#    beklenen: monitoring namespace'inde 6 pod Running
+
+# 3. Uygulama image'ını build et ve cluster'a yükle   (~2 dk)
+./scripts/build.sh
+#    beklenen: selcuksan/sre-case-app üç node'a da yüklendi
+
+# 4. Deployment + Service + HPA
+kubectl apply -f k8s/
+kubectl rollout status deploy/sre-case-app
+curl localhost:30080/health          # {"status":"UP"}
+
+# 5. Yük testi                                        (~6 dk)
+k6 run loadtest/spike.js
 ```
 
-`up` idempotent: cluster zaten varsa yeniden oluşturmaz, metrics-server zaten kuruluysa yeniden
-kurmaz. Tekrar çalıştırmak sadece durum doğrulaması yapar.
+Yük testi sırasında ayrı bir terminalde:
 
-### Kararlar ve gerekçeleri
+```bash
+kubectl get hpa sre-case-app -w
+kubectl get pods -l app=sre-case-app -w
+```
 
-| Karar | Gerekçe |
+**Grafana:** http://localhost:30300/d/sre-case — kullanıcı `admin`, şifre `admin`
+(local demo kimlik bilgisi, [values dosyasında](monitoring/values-kube-prometheus-stack.yaml)
+açıkça duruyor; gerçek ortamda Secret yöneticisinden gelir).
+
+Dashboard'da göreceğin: istek hızı yükselir, gecikme önce sıçrar, HPA replica sayısını 1'den 10'a
+çıkarır, gecikme yük hâlâ tepedeyken düşer, yük bitince replica sayısı 1'e iner.
+
+## Diğer komutlar
+
+```bash
+./scripts/cluster.sh status    # node'lar ve anlık CPU/RAM
+./scripts/build.sh push        # image'ı ayrıca Docker Hub'a push eder (docker login gerekir)
+./scripts/monitoring.sh down   # monitoring yığınını siler
+./scripts/cluster.sh down      # cluster'ı komple siler
+```
+
+`cluster.sh up` ve `monitoring.sh up` idempotent: kurulu olanı yeniden kurmaz, tekrar çalıştırmak
+sadece durum doğrulaması yapar.
+
+## Repo yapısı
+
+| Yol | İçerik |
 |---|---|
-| GKE yerine **kind** | Case'in ölçtüğü şey (HPA + metrik + dashboard) ortamdan bağımsız. kind aynı davranışı bulut maliyeti ve kota beklemesi olmadan, tekrar üretilebilir şekilde verir. GKE farkları aşağıda. |
-| **1 control-plane + 2 worker** | Sabit boyutlu node pool isteri için yeterli. |
-| **Bash + YAML, Terraform değil** | Terraform’un resmi bir kind provider’ı yok. Community provider’lar var ama bu case için gereksiz; bash işimizi görüyor |
-| **Kubernetes v1.32.0** | Versiyon sabit; aynı repo herkeste aynı versiyonu kuracaktır. |
-| **metrics-server kurulumu** | Vanilla Kubernetes’te metrics-server built-in gelmez; HPA da onsuz çalışmaz. |
-| **NodePort 30300 / 30080 host'a maplendi** | Grafana ve yük testi host'tan erişecek. Port mapping sonradan eklenemez (cluster'ı silip kurmak gerekir), o yüzden baştan konuldu. |
+| [kind-config.yaml](kind-config.yaml) | Cluster topolojisi: 1 control-plane + 2 worker, NodePort eşlemeleri |
+| [scripts/](scripts/) | `cluster.sh` (cluster + metrics-server), `monitoring.sh` (gözlemlenebilirlik yığını), `build.sh` (image) |
+| [app/](app/) | Java 21 + Spring Boot servisi ve Dockerfile |
+| [k8s/](k8s/) | Deployment, Service, HPA |
+| [monitoring/](monitoring/) | Prometheus, Grafana, Tempo ve OTel Collector helm values dosyaları |
+| [grafana/dashboard.json](grafana/dashboard.json) | Dashboard tanımı; `monitoring.sh up` bunu ConfigMap olarak yükler |
+| [loadtest/spike.js](loadtest/spike.js) | k6 yük testi: baseline → 10 kat artış → plato → düşüş |
 
-### Kapasite
+## Uygulama
 
-Docker'a ayrılan kaynak: **10 CPU / 15.6 GB**. Ölçekleme davranışını node kapasitesi değil, HPA kararı belirleyecek.
-
-### GKE olsaydı ne değişirdi?
-
-Cluster'ı Terraform ile GKE **Standard** olarak kurardık; bu case için Standard daha mantıklı çünkü biz öncelikli olarak pod ölçeklenmesini görmek istiyoruz. 
-Node'lar Docker container'ı yerine sabit sayıda gerçek VM olur, metrics-server hazır gelir ve servise NodePort yerine LoadBalancer üzerinden erişilirdi.
-
-HPA, metrikler, dashboard iki ortamda da birebir aynı olacağı için değişen sadece altyapının nasıl sağlandığı olur.
-
-## Adım 2 — Uygulama
-
-Java 21 + Spring Boot 4.1.0. İskelet sıfırdan yazılmadı.
+İskelet Spring Initializr'dan üretildi:
 
 ```bash
 curl -s https://start.spring.io/starter.zip \
@@ -57,426 +93,9 @@ curl -s https://start.spring.io/starter.zip \
   -o /tmp/app.zip && unzip -q /tmp/app.zip -d app/
 ```
 
-Üstüne tek bir dosya yazıldı: [WorkController.java](app/src/main/java/com/example/app/WorkController.java)
-
-```bash
-./scripts/build.sh        # image build + kind cluster'ına yükle
-./scripts/build.sh push   # ayrıca Docker Hub'a push (docker login gerekir)
-```
-
-Image: `selcuksan/sre-case-app:x.y.z`
-
-### Endpoint'ler
+Üstüne tek dosya yazıldı: [WorkController.java](app/src/main/java/com/example/app/WorkController.java)
 
 | Endpoint | Ne yapar |
 |---|---|
 | `GET /health` | `{"status":"UP"}` döner. Probe'lar buraya bakar. |
-| `GET /work?n=...` | `n` kez üst üste SHA-256 hesaplar, `{"n","ms","hash"}` döner. Harcanan CPU `n` ile doğru orantılı. |
-
-### İşi ölçtük
-
-`n`, isteğe verdiğimiz "kaç kere SHA-256 hesaplayacağı" sayısıdır. Yükü bu sayıyla ayarlıyoruz. 1 CPU'lu container'da ölçtüğümüz cevap süreleri:
-
-| n (istek başına iş) | cevap süresi |
-|---|---|
-| 100.000 | 13 ms |
-| 200.000 | 25 ms |
-| 400.000 | 51 ms |
-| 800.000 | 101 ms |
-
-İş tamamen hesaplama, arada disk veya ağ beklemesi yok. O yüzden geçen süre doğrudan yakılan CPU süresine eşit: 25 ms süren istek 25 ms CPU yemiş demek.
-
-`n` iki katına çıkınca süre de tam iki katına çıkıyor, yani ilişki doğrusal. Bunu ölçekleyince
-**n=8.000.000 bir CPU'yu tam bir saniye meşgul ediyor.**
-
-Bu ölçüm yük testinde replica hedefini belirlemek için kullanıldı: "kaç istek kaç CPU eder"
-sorusunu tahminle değil bu oranla cevapladık. Ayrıntısı Adım 3'te.
-
-### JVM ve container limitleri
-
-JVM açılırken makinede kaç CPU ve ne kadar RAM olduğuna bakar, heap'ini (nesneler için ayırdığı bellek) ona göre boyutlandırır. Eski JVM'ler container içinde
-çalışsa dahi makinenin tamamını görürdü. Örneğin pod'a 512 MB limit vermişiz, JVM host'un 15.6 GB'ını görüp kendine birkaç GB heap ayırmaya kalkar, limiti aşar, Kubernetes pod'u OOMKilled ile öldürürdü.
-
-Java 10+ ile JVM container/cgroup limitlerini otomatik olarak algılasa da şu iki işlem önemli:
-
-1. **Pod'a gerçekten `limits` vermek.** Limit yoksa okunacak bir cgroup limiti de olmaz, JVM yine host'un tamamını görür.
-2. **Heap yüzdesi.** JVM varsayılanı limitin sadece %25'i. [Dockerfile](app/Dockerfile)'da `-XX:MaxRAMPercentage=75` ile %75'e çıkardık.
-
-JVM gördüğü CPU sayısına göre kendi thread havuzlarını kurar. Host'un
-10 CPU'sunu gören bir JVM, 1 CPU'luk container'da gereğinden fazla thread açar. CPU tüketimi
-dalgalanır, HPA da yanlış karar verir. 
-
-Uygulama açılırken JVM'in container içinden gördüğü değerleri şu şekilde log'a
-basması bekleniyor:
-
-```
-JVM container limits: availableProcessors=1, maxMemory=371MB, java=21.0.11
-```
-
-### Docker Hub
-
-GCP yerine kind kullandığımız için Docker Hub'a push ediyoruz.
-
-## Adım 3 — Ölçekleme
-
-```bash
-kubectl apply -f k8s/
-```
-
-[deployment.yaml](k8s/deployment.yaml), [service.yaml](k8s/service.yaml),
-[hpa.yaml](k8s/hpa.yaml).
-
-### Kararlar ve gerekçeleri
-
-| Karar | Gerekçe |
-|---|---|
-| **requests = limits = 500m CPU / 512Mi** | İkisi eşit olunca pod Guaranteed QoS oluyor, HPA'nın gördüğü kullanım oranı da %100'ü aşamıyor. Ayrıca CPU limiti olmasaydı JVM host'un 10 CPU'sunu görürdü; Adım 2'deki `availableProcessors=1` kanıtı ancak limit varken geçerli. |
-| **minReplicas 1, maxReplicas 10** | 10 × 500m = 5 CPU, host'un yarısı. |
-| **Hedef CPU %20** | 500m'in %20'si, yani 100m. Düşük tuttuk: 60 saniyede 10 kat trafik alan bir serviste HPA'yı erken tetiklemek istiyoruz. Pod'lar dolmadan ölçeklenmeye başlıyoruz — kaynak karşılığında tepki süresi satın alıyoruz. Yüksek bir hedefte (%80 gibi) HPA geç kalır, istekler kuyruklanır. |
-| **scaleUp bekleme süresi 0** | Spike'ta beklemeden büyüsün. |
-| **scaleDown bekleme süresi 120 sn** | Varsayılan 300 sn. 120'ye çektik ki çıkış ve iniş tek grafikte görünsün. |
-| **Probe timeout'ları gevşetildi** | Varsayılan 1 saniye. Yük altında `/health` biraz gecikiyor. |
-
-### İlk denemede ne oldu
-
-İlk yük testinde ölçekleme hiç çalışmadı, tersine pod öldü. Sırasıyla:
-
-1. Tek pod'a, kapasitesinin 10 katı istek bir anda gitti
-2. İstekler sınırsız birikti, `/health` de bu kuyruğun arkasında kaldı
-3. Readiness probe düştü, pod Service'ten çıktı
-4. Liveness probe da düştü, kubelet pod'u öldürdü (4 restart)
-5. Tek pod unready olunca HPA metrik göremedi: `cpu: <unknown>` → **hiç ölçeklenemedi**
-
-**HPA'nın çalışması için pod'un ready kalması şart.** Yük altında sağlık kontrolünü kaybeden bir servis ölçeklenemez.
-
-### Yük modeli: açık çevrim
-
-[loadtest/spike.js](loadtest/spike.js) — baseline, 60 saniyede 10 kat artış, plato, düşüş.
-
-```bash
-k6 run loadtest/spike.js
-```
-
-k6'da iki model var ve seçim sonucu değiştiriyor:
-
-| Model | Ne yapar | Gerçekçi mi |
-|---|---|---|
-| Kapalı çevrim (`ramping-vus`) | Sabit sayıda kullanıcı, her biri cevabı bekleyip yeni istek atar | Hayır. Servis yavaşlayınca yük de kendiliğinden azalır. |
-| **Açık çevrim (`ramping-arrival-rate`)** | Saniyede sabit sayıda istek, servisin hızından bağımsız | **Evet.** Kampanya SMS'i giden kullanıcılar senin p95'ine bakıp beklemez. |
-
-Açık çevrimi seçtik. Bir de `thresholds` ekledik (`http_req_failed: rate<0.05`), böylece test
-sadece yük üretmiyor, geçti/kaldı da diyor.
-
-Kapalı çevrimi de denedik ve şu farkı gördük: pod eklendikçe sistem daha çok iş yapıyordu ama
-gecikme düşmüyordu, çünkü kullanıcılar boşalan kapasiteyi anında dolduruyordu. Açık çevrimde istek
-hızı sabit olduğu için pod eklendikçe kuyruk gerçekten eriyor.
-
-### Ölçüm sonucu
-
-| | |
-|---|---|
-| Replica seyri | 1 → 3 → **10**, yük bitince 10 → 2 → 1 |
-| 1'den 10'a çıkış süresi | ~2 dakika |
-| Toplam istek | 8.519 |
-| Hata oranı | **%0** |
-| Gecikme: medyan / p95 | 29 ms / **217 ms** |
-| Pending pod | **0** — bütün replica'lar Running/Ready |
-
-Gecikme eğrisi hikâyeyi anlatıyor: pod'lar açılırken 300 ms'ye çıktı, 10 pod hazır olunca yük hâlâ
-devam ederken 50 ms'ye indi.
-
-### En önemli bulgu: pod açmak yetmiyor, trafiğin de taşınması gerekiyor
-
-İlk açık çevrim testinde tuhaf bir sonuç çıktı. HPA 10 pod açtı, hepsi Ready oldu, ama **gecikme
-düzelmedi** — p95 plato boyunca 4,8 saniyede kaldı. Oysa toplam yük saniyede 36 istekti; 10 pod'un
-bunu rahat karşılaması gerekirdi.
-
-Dashboard'da pod başına dağılıma bakınca sebep çıktı:
-
-```
-pod       CPU     istek/sn
-b2gjj    497m      11,6      <- limitte, tıkalı
-dq8p7    105m       6,8
-7nx4v     99m       3,4
-...
-b9kx4      0m       0,0      <- hiç istek almamış
-jq46j      0m       0,0
-px7q6      0m       0,0
-```
-
-10 pod'dan üçü hiç istek almıyordu, biri tek başına limitine dayanmıştı. p95'teki 4,8 saniye
-tamamen o tıkalı pod'un kuyruğuydu.
-
-**Sebep:** k6 HTTP bağlantılarını yeniden kullanıyor (keep-alive). Kubernetes Service ise L4
-seviyesinde çalışıyor ve dağıtımı **bağlantı bazında** yapıyor, istek bazında değil. Bağlantı
-kurulurken bir pod seçiliyor ve o bağlantıdan gelen bütün istekler ömür boyu o pod'a gidiyor.
-Test başlarken tek pod vardı, bütün bağlantılar ona kuruldu; HPA 9 pod daha açtı ama mevcut
-bağlantılar taşınmadı.
-
-Doğrulamak için `noConnectionReuse: true` ile tekrar çalıştırdık:
-
-| | keep-alive açık | keep-alive kapalı |
-|---|---|---|
-| p95 gecikme | 4.590 ms | **217 ms** |
-| Medyan | 82 ms | 29 ms |
-| En kötü istek | 8,5 sn | 2,65 sn |
-| Pod başına dağılım | 11,6 / 6,8 / ... / 0 / 0 / 0 | 0,7 / 0,7 / 0,6 / 0,6 / 0,3 ... |
-
-21 kat fark. Ölçekleme baştan beri çalışıyordu; çalışmayan şey yük dağıtımıydı.
-
-**Prod'da çözüm `noConnectionReuse` değildir** — o sadece bir test aracı, her istek için yeniden
-bağlantı kurmak gecikmeyi ve CPU'yu artırır. Yapılması gereken:
-
-| Katman | Yapılacak |
-|---|---|
-| Birincil | Servisin önüne istek bazında dağıtım yapan bir L7 katmanı: Ingress controller (nginx, Envoy) veya service mesh. Yeni pod anında pay alır. |
-| Destekleyici | Sunucu tarafında bağlantı ömrünü sınırlamak (`max connection age`). Uzun ömürlü bağlantılar periyodik kopar ve yeniden dağılır. gRPC gibi tek uzun bağlantı kullanan protokollerde bu şart. |
-| İzleme | Pod başına istek/CPU dağılımını dashboard'da tutmak. Biz bunu ancak arayarak bulduk; sürekli görünür olsaydı hemen fark edilirdi. |
-
-### 10 replica'ya ulaşmak için ne gerekti
-
-İlk denemelerde HPA 4-7 pod arasında takılıyordu. Kullanıcı sayısını artırarak çözmeye çalıştım,
-işe yaramadı: kapalı çevrim modelde kullanıcı arttıkça gecikme de arttığı için saniyedeki istek
-sayısı neredeyse sabit kalıyordu. 100 → 200 → 250 kullanıcı denemeleri 4 → 7 → 5 → 6 pod verdi;
-yakınsama değil salınımdı.
-
-Doğru kol HPA'nın kendi formülüydü:
-
-```
-istenen pod = toplam CPU tüketimi / (pod request x HPA hedefi)
-```
-
-Yükle oynamak payı çok az değiştiriyordu. Paydayı değiştirdik: HPA hedefini %50'den %20'ye çektik.
-
-Arada pod'u 200m CPU'ya küçültmeyi de denedik; pod'lar Ready kalamadı, geri alındı.
-
-## Adım 4 — Observability (OpenTelemetry)
-
-```bash
-./scripts/monitoring.sh up     # Prometheus + Grafana + Tempo + OTel Collector
-./scripts/monitoring.sh down
-```
-
-Grafana: http://localhost:30300 (admin / admin)
-
-### Akış
-
-```
-Uygulama (OTel Java agent)
-   |
-   +-- trace + metrik --OTLP push--> OTel Collector
-                                          |
-                                          +-- trace --OTLP push--> Tempo
-                                          |
-                                          +-- metrik: :8889/metrics
-                                                          ^
-                                                          | scrape (pull)
-                                                     Prometheus
-                                                          |
-                                                       Grafana
-```
-
-Metrik yolu **pull**: Collector metrikleri kendi portunda yayınlıyor, Prometheus onları scrape
-ediyor. Prometheus'un doğal çalışma şekli bu. Alternatifi olan remote write ile Collector doğrudan
-Prometheus'a yazabilirdi ama remote write'ın asıl amacı veriyi uzun süreli depoya (Thanos, Mimir)
-göndermek; tek bir Prometheus'a push için kullanmak aracı amacı dışında kullanmak olurdu.
-
-Trace yolu **push** olarak kalıyor, çünkü Tempo'da scrape diye bir karşılık yok. Trace zaten olay
-bazlı bir veri, üretildiği anda gönderilmesi gerekiyor.
-
-### Kararlar ve gerekçeleri
-
-| Karar | Gerekçe |
-|---|---|
-| **OTel Java agent (`-javaagent`)** | Kod değişikliği yok. HTTP istekleri, JVM metrikleri ve trace'ler kendiliğinden geliyor. Sürüm [Dockerfile](app/Dockerfile)'da sabitlendi (2.30.0). |
-| **Collector var** | Zorunlu değildi, tercih. İki faydası: Kubernetes özniteliklerini (`k8s.pod.name` vb.) Collector ekliyor, uygulama kendi pod'unun adını bilmek zorunda kalmıyor. Ve uygulama tek adres biliyor — yarın Tempo'yu değiştirsek uygulamayı yeniden deploy etmeye gerek kalmıyor. |
-| **Alloy yerine OTel Collector** | İkisi de aynı işi yapar. Collector'ün config'i düz YAML, Alloy'unki kendi dili. Ayrıca case'in dili OpenTelemetry; satıcı bağımsız olanı seçmek açıklamayı kolaylaştırıyor. |
-| **Tempo tek binary** | Dağıtık kurulum (tempo-distributed) bu ölçek için gereksiz. |
-| **Log toplamıyoruz** | Case istemiyor. `OTEL_LOGS_EXPORTER=none`. |
-| **Gereksiz bileşenler kapalı** | kube-prometheus-stack varsayılanıyla kurulsa Alertmanager, node-exporter, ~100 alarm kuralı ve ~30 dashboard geliyordu. Hiçbirini kullanmıyoruz, kapattık. Açık kalanlar: Prometheus, Grafana, kube-state-metrics. |
-| **kube-state-metrics açık** | HPA'nın replica sayısını Grafana'da çizebilmemiz onun metriklerine bağlı. |
-
-### Neden `resource_to_telemetry_conversion`
-
-Collector metrikleri yayınlarken Kubernetes özniteliklerini varsayılan olarak ayrı bir
-`target_info` metriğine koyuyor, metriğin kendi etiketlerine değil. Bu haliyle Grafana'da pod
-bazında kırılım yapılamıyor. [values-otel-collector.yaml](monitoring/values-otel-collector.yaml)'da
-bu ayarı açtık, öznitelikler metrik etiketi haline geldi.
-
-### Doğrulama
-
-`service.name` ve Kubernetes öznitelikleri her iki sinyalde de geliyor.
-
-Metrik tarafı (Prometheus, `jvm_cpu_count` etiketleri):
-
-```
-service_name        = sre-case-app
-k8s_pod_name        = sre-case-app-7cb95f8c66-rh5tv
-k8s_namespace_name  = default
-k8s_node_name       = sre-case-worker
-k8s_deployment_name = sre-case-app
-```
-
-Trace tarafı (Tempo'da mevcut etiketler):
-
-```
-service.name, k8s.pod.name, k8s.namespace.name, k8s.node.name,
-k8s.deployment.name, k8s.container.name, k8s.replicaset.name
-```
-
-Agent uygulamanın açılışını 2,4 saniyeden 5,6 saniyeye çıkardı. Liveness probe'un 20 saniyelik
-başlangıç gecikmesinin içinde kaldığı için bir değişiklik gerekmedi.
-
-## Adım 5 — Grafana Dashboard
-
-Dashboard tanımı: [grafana/dashboard.json](grafana/dashboard.json)
-
-`./scripts/monitoring.sh up` bu dosyayı `grafana_dashboard` etiketli bir ConfigMap'e koyuyor;
-Grafana'nın sidecar'ı otomatik alıyor. Arayüzden elle import yok, repo tek doğru kaynak.
-
-Adres: http://localhost:30300/d/sre-case (admin / admin)
-
-### Panel sırası neden böyle
-
-Case dashboard'un "yük geldi → pod açıldı → latency düzeldi" hikâyesini tek bakışta anlatmasını
-istiyor. Panelleri bu sebep-sonuç zincirine göre sıraladık, yukarıdan aşağı okununca hikâye
-çıkıyor:
-
-| Grup | Panel | Hikâyedeki yeri |
-|---|---|---|
-| **1. Trafik** | İstek hızı (RPS) | Yük geldi |
-| | Gecikme p50/p95/p99 | Tek pod yetişemiyor, p95 sıçrıyor |
-| | Hata oranı | Ölçekleme doğru çalışıyorsa sıfırda kalmalı |
-| **2. Ölçekleme** | Replica: istenen vs hazır | Pod açıldı |
-| | HPA CPU: mevcut vs hedef | HPA'nın kararının sebebi |
-| **3. Container** | Pod başına CPU + limit | Podların gerçekten dolduğu an |
-| **4. JVM** | Heap, GC süresi | Ölçeklemenin JVM tarafındaki etkisi |
-
-Gecikme paneli en kritik olanı: p95'in önce sıçrayıp sonra düşmesi, "latency düzeldi" kısmının
-kanıtı.
-
-### İki panelde özellikle dikkat edilen nokta
-
-**Replica paneli iki çizgi gösteriyor: HPA'nın istediği ve gerçekten Ready olan pod sayısı.**
-Tek çizgi (sadece istenen) gösterseydik, podların Pending'de bekleyip beklemediği görünmezdi.
-İki çizgi arasındaki boşluk pod'un açılıp henüz trafik almaya hazır olmadığı süre; hazır çizgisi
-istenen çizgisini yakalıyorsa case'in "Pending'de bekleyen pod ölçeklenmiş sayılmaz" şartı
-sağlanmış demektir.
-
-**Container CPU panelinde limit ayrı bir kesikli çizgi olarak duruyor.** Kullanımın limite ne kadar
-yaklaştığını göz kararı anlamak yerine doğrudan görüyoruz.
-
-### Hata oranı panelinde bir ayrıntı
-
-Hiç 5xx yokken bölme işlemi boş sonuç veriyor ve panel "No data" yazıyordu — bu, hata olmadığı
-anlamına gelse de yanlış okunmaya açık. Sorguya `or vector(0)` ekledik, artık sıfır çiziyor.
-"Hata yok" ile "veri yok" arasındaki fark bir dashboard'da önemli.
-
-## Adım 6 — Analiz
-
-Aşağıdaki sayılar 9 Ağustos 14:53:37'de başlayan testten. Yükün artmaya başladığı an
-(baseline'ın bittiği an) **14:54:22**; tablodaki `t+` değerleri bu ana göre.
-
-Bu analiz için uygulamanın metrik gönderme aralığını 60 saniyeden 10 saniyeye çektik
-(`OTEL_METRIC_EXPORT_INTERVAL`). 60 saniyelik çözünürlükle "kaç saniye sonra" sorusu
-cevaplanamıyordu.
-
-```
-saat      t+     ready   rps     p99
-14:54:30    +8s     2     0.0       -
-14:55:30   +68s     2    10.9    4.15s
-14:56:00   +98s     9    18.7    6.71s   <- tepe
-14:56:30  +128s    10    27.8    6.13s
-14:57:30  +188s    10    36.3    0.10s   <- yuk hala tepede, gecikme normale dondu
-14:58:00  +218s    10    40.0    0.15s
-15:00:30  +368s     7     3.0    0.05s
-15:01:00  +398s     2     1.7    0.07s
-15:02:30  +488s     1       -       -
-```
-
-### 1. Yük başladıktan kaç saniye sonra ilk yeni pod trafik almaya başladı?
-
-**8 saniye** — ama bu sayı yanıltıcı, açıklaması gerekiyor.
-
-Kubernetes API'sinden okunan kesin zaman damgaları:
-
-| Pod | Oluşturuldu | Ready oldu |
-|---|---|---|
-| 2. pod | 14:54:13 | **14:54:30** |
-| 3-6. pod | 14:55:13 | 14:55:31 |
-| 7-9. pod | 14:55:28 | 14:55:46 |
-| 10. pod | 14:55:43 | **14:56:01** |
-
-İkinci pod yük artmaya başlamadan **9 saniye önce** oluşturulmuş. Sebebi: baseline yükü
-(saniyede 4 istek = 100m CPU) HPA hedefimizin tam üstünde. Yani HPA daha spike gelmeden
-ölçeklenmeye başlamış.
-
-Bu bir ölçüm kusuru — baseline'ın hedefin altında olması gerekirdi. Doğru okunması gereken sayılar:
-
-- **Spike'tan sonraki ilk pod grubu:** 14:55:31'de Ready → yük artmaya başladıktan **69 saniye** sonra
-- **Tam kapasiteye (10 pod) ulaşma:** 14:56:01 → **99 saniye**
-
-Pod'un Ready olması ile trafik alması arasında fark yok denecek kadar az; Ready olan pod Service
-endpoint'lerine ekleniyor ve hemen istek almaya başlıyor.
-
-**Bu gecikme neden var:** metrics-server 15 saniyede bir metrik topluyor, HPA 15 saniyede bir
-bakıyor, pod'un açılıp Ready olması ~18 saniye (JVM + OTel agent). Toplamda 45-70 saniyelik bir
-tepki süresi kaçınılmaz. Kampanya senaryosunda bu süre boyunca servis yüksek gecikmeyle çalışıyor.
-Çaresi HPA'yı hızlandırmak değil, **kampanya öncesi `minReplicas`'ı elle yükseltmek**.
-
-### 2. Bu süre boyunca p99 ne oldu, istek kaybı yaşandı mı?
-
-**p99 tepe değeri 6,71 saniye** (t+98s, pod'lar hâlâ açılırken).
-
-Seyri: 4,15s → **6,71s** → 6,13s → **0,10s**. Yani pod'lar tamamlandıktan yaklaşık 60 saniye sonra
-normale döndü ve yük hâlâ tepedeyken (saniyede 36-40 istek) 0,10-0,15 saniyede kaldı.
-
-**İstek kaybı yaşanmadı.** k6 raporu:
-
-```
-http_req_failed ... 0.00%  0 out of 8446
-✓ 'rate<0.05' rate=0.00%
-```
-
-İstemci tarafındaki rakam esas alındı; sunucu metrikleri sadece sunucuya ulaşan istekleri görür,
-bağlantı kurulamadan düşen istek orada görünmez. k6 tarafında da sıfır.
-
-Yani sistem **yavaşladı ama kaybetmedi**. İstekler kuyrukta bekledi, hiçbiri düşmedi. Bir bankacılık
-servisi için 6,7 saniyelik p99 kabul edilemez olurdu; ama hata almak yerine beklemek, hata almaktan
-iyidir.
-
-### 3. Yük düştükten sonra replica sayısı ne kadar sürede geri indi?
-
-Yük 14:58:22'de normale döndü (saniyede 40'tan 4'e).
-
-| Saat | Replica |
-|---|---|
-| 15:00:30 | 10 → 7 |
-| 15:01:00 | 7 → 2 |
-| 15:02:30 | 2 → **1** |
-
-- **İlk küçülmeye kadar: 128 saniye.** Bu tesadüf değil — HPA'ya verdiğimiz
-  `scaleDown.stabilizationWindowSeconds: 120` değeri. HPA yük düştükten sonra 2 dakika bekleyip
-  emin olmadan pod kapatmıyor.
-- **Tamamen 1 replica'ya inmesi: 248 saniye** (~4 dakika).
-
-Küçülme büyümeden yavaş, ve bu **kasıtlı**. Yanlış pod açmanın maliyeti birkaç dakikalık fazladan
-kaynak; yanlış pod kapatmanın maliyeti ise trafik geri geldiğinde servisin çökmesi. HPA bu yüzden
-büyürken atik, küçülürken temkinli davranacak şekilde ayarlanır.
-
-Varsayılan değer 300 saniye. Biz 120'ye çektik ki test penceresinde iniş de görünsün. Prodüksiyonda
-300'de bırakılmalı.
-
-### Özet
-
-| Soru | Cevap |
-|---|---|
-| İlk yeni pod (spike sonrası) | 69 saniye |
-| 10 pod'a ulaşma | 99 saniye |
-| p99 tepe | 6,71 saniye |
-| p99 normale dönüş | Yük tepedeyken 0,10 saniye |
-| İstek kaybı | Yok (8.446 istekte 0 hata) |
-| İlk küçülme | 128 saniye (120 sn bekleme penceresi) |
-| 1 replica'ya dönüş | 248 saniye |
-
-
+| `GET /work?n=...` | `n` kez üst üste SHA-256 hesaplar. Harcanan CPU `n` ile doğru orantılı. Yük testinde `n=200000` kullanılıyor, bu 1 CPU'da yaklaşık 25 ms. |

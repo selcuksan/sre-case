@@ -1,44 +1,20 @@
-# SRE Case — Rapor
-
-Kubernetes üzerinde çalışan bir Java servisinin yük altında HPA ile ölçeklenmesi, OpenTelemetry ile
-izlenmesi ve bu davranışın Grafana'da gösterilmesi.
-
-GCP yerine local `kind` kullanıldı. Ölçekleme mantığı (HPA nesnesi, metrikler, dashboard) iki
-ortamda birebir aynı; değişen sadece altyapının nasıl sağlandığı.
-
-**Sonuç:** 60 saniyede 10 kat trafik altında servis 1'den 10 replica'ya çıktı, hiçbir pod Pending'de
-kalmadı, 8.446 istekte hata alınmadı.
-
-Kurulum ve ayrıntılı ölçümler: [README.md](README.md)
-
----
+# Rapor
 
 ## 1. Mimari
 
-```
-                              HPA <-- metrics-server
-                               |
-  k6 --> NodePort --> Service --+--> [ Java pod x N ]
-                                        |  OTel Java agent (-javaagent)
-                                        |  OTLP (trace + metrik)
-                                        v
-                                  OTel Collector
-                                   /          \
-                          OTLP push          scrape (pull)
-                             /                    \
-                          Tempo               Prometheus <-- kube-state-metrics
-                             \                    /                cadvisor
-                              \                  /
-                                    Grafana
-```
+![mimari-diyagramı](mimari.png)
 
-Uygulama koduna dokunulmadı; enstrümantasyon `-javaagent` ile eklendi.
+* k6 servise yük üretir. Trafik NodePort üzerinden Kubernetes Service'e gelir ve çalışan Java pod'ları arasında dağıtılır.
 
-Collector zorunlu değildi ama iki iş yapıyor: Kubernetes özniteliklerini (`k8s.pod.name` vb.) o
-ekliyor, ve uygulama tek adres bildiği için arka uç değişse yeniden deploy gerekmiyor.
+* HPA, metrics-server üzerinden pod'ların CPU kullanımını takip eder. CPU hedefin üzerine çıktığında replica sayısını artırır, yük düştüğünde tekrar azaltır.
 
-Metrikler **scrape** ile alınıyor çünkü Prometheus pull tabanlı çalışır; remote write uzun süreli
-depo (Thanos, Mimir) senaryosunun aracıdır. Trace tarafı push, çünkü Tempo'da scrape karşılığı yok.
+* Java pod'larında OpenTelemetry Java Agent çalışır (Auto-instrumentation). Kod değişikliği gerektirmez. Uygulamanın trace verileri OTLP ile OpenTelemetry Collector'a gönderilir, Collector da bu trace'leri Tempo'ya iletir. Collector kullanımı tercih edildi ve iki konuda fayda sağladı:
+   1. Kubernetes özniteliklerini (`k8s.pod.name` gibi) o ekliyor.
+   2. Uygulama tek bir adres tanıyor. 
+
+* Uygulama metrikleri de Collector'e push edilir. Prometheus uygulama metriklerini Collector'den scrape ederek toplar. Remote write ise veriyi Thanos ya da Mimir gibi uzun süreli bir depoya aktarmak için kullanılır. kube-state-metrics Kubernetes obje durumlarını, cAdvisor ise container CPU ve memory gibi metrikleri sağlar.
+
+* Grafana, Prometheus ve Tempo'yu datasource olarak kullanır. Böylece trafik, CPU kullanımı, pod sayısı, HPA ölçekleme davranışı ve trace'ler aynı yerden izlenebilir.
 
 ---
 
@@ -46,56 +22,41 @@ depo (Thanos, Mimir) senaryosunun aracıdır. Trace tarafı push, çünkü Tempo
 
 | Karar | Değer | Gerekçe |
 |---|---|---|
-| **Resource request / limit** | `cpu: 500m`, `memory: 512Mi` (request = limit) | İkisi eşit olunca pod Guaranteed QoS oluyor ve HPA'nın gördüğü kullanım oranı %100'ü aşamıyor. CPU limiti ayrıca zorunlu: limit olmasaydı JVM host'un 10 CPU'sunu görürdü. Log ile kanıtlandı: `availableProcessors=1, maxMemory=371MB`. |
-| **JVM heap** | `-XX:MaxRAMPercentage=75` | JVM varsayılanı limitin %25'i — 512 MB'lık pod'da 128 MB heap demek. Sabit `-Xmx` yazılmadı; öyle olsa memory limiti her değiştiğinde image yeniden build edilirdi. |
-| **HPA metriği** | CPU utilization | İş tamamen CPU-bound; istek başına 25 ms CPU ölçüldü. Bellek veya özel metrik bu iş yükünü temsil etmezdi. |
-| **HPA hedefi** | %20 (= 100m) | 60 saniyede 10 kat trafikte pod'ların dolmasını beklemek geç kalmak demek. Düşük hedefle erken ölçekleniyoruz — fazladan pod maliyetine karşılık tepki süresi satın alıyoruz. |
-| **scaleUp / scaleDown** | 0 sn / 120 sn | Büyürken atik, küçülürken temkinli. Yanlış pod açmanın maliyeti birkaç dakika kaynak; yanlış pod kapatmanın maliyeti trafik geri geldiğinde servisin çökmesi. |
-| **Replica aralığı** | 1 – 10 | 10 × 500m = 5 CPU, host'un yarısı. Kapasite yettiği için hiçbir pod Pending'de kalmıyor. |
-| **Readiness probe** | `/health`, 5 sn aralık, 3 sn timeout, 3 deneme | Varsayılan 1 sn timeout ile ölçüldü: aynı testte %11 hata ve pod restart'ı. Gevşetilince %0 hata. |
-| **Liveness probe** | `/health`, 15 sn aralık, 5 sn timeout, 6 deneme | Liveness'ın işi takılmış process'i yakalamak, yavaş process'i değil. Sıkı ayarlanırsa yük altındaki sağlıklı pod'u öldürür ve ölçeklemeyi engeller. |
-| **Node kapasitesi** | 1 control-plane + 2 worker, sabit | Case cluster autoscaler istemiyor. Ölçeklenen tek şey pod sayısı. kind node'ları host'un 10 CPU'sunu paylaşıyor; 5 CPU uygulamaya, kalanı monitoring ve yük üreticiye. |
+| **Resource request / limit** | `cpu: 500m`, `memory: 512Mi` | Resource değerleri production sizing iddiasıyla değil, lokal ortamda HPA davranışını net şekilde gözlemleyebilmek ve aynı anda birden fazla replica çalıştırabilmek amacıyla düşük ve kontrollü seçildi |
+| **JVM heap** | `-XX:MaxRAMPercentage=75` | JVM heap’inin container memory limitinin tamamını kullanmaması için %75 seçildi. Kalan alan metaspace, thread stack, direct buffer ve diğer native memory kullanımları için bırakıldı. |
+| **HPA metriği** | CPU utilization | Uygulama CPU-bound olduğu için CPU utilization seçildi. Trafik arttığında CPU tüketiminin doğrudan yükselmesi ölçekleme davranışını sade ve öngörülebilir şekilde göstermek için uygun bir metrik. |
+| **HPA hedefi** | %20 (= 100m) | Lokal demo ortamında ölçeklemeyi daha kolay ve görünür şekilde tetiklemek için düşük bir CPU utilization hedefi seçildi. |
+| **scaleUp / scaleDown** | 0 sn / 120 sn | Ani trafik artışına hızlı cevap verilmesi hedeflendi. Ayrıca kısa süreli düşüşlerde replica sayısının hemen azaltılması engellendi. |
+| **Replica aralığı** | 1 – 10 | Üst sınır, lokal cluster kapasitesini aşmadan 10x trafik senaryosunu gösterebilecek şekilde seçildi. |
+| **Readiness probe** | `/health`, 5 sn aralık, 3 sn timeout, 3 deneme | 5 saniyelik kontrol aralığı hızlı tepki için yeterli; 3 saniyelik timeout ve 3 başarısız deneme ise kısa süreli gecikmelerde pod’un hemen servisten çıkarılmasını önler. |
+| **Liveness probe** | `/health`, 15 sn aralık, 5 sn timeout, 6 deneme | Liveness probe, container’ı restart ettiği için readiness probe’a göre daha toleranslı ayarlandı. Uygulama yaklaşık 90 saniye boyunca sağlık kontrolüne cevap vermezse container yeniden başlatılır. |
+| **Node kapasitesi** | 1 control-plane + 2 worker, sabit | Node kapasitesi sabit tutuldu; HPA ile pod seviyesinde ölçeklenmeye odaklanıldı. İki worker node, ölçeklenen pod’ların cluster içinde dağıtılabilmesi için seçildi.|
 
 ---
 
 ## 3. Karşılaşılan problemler ve teşhis
 
-**1. HPA hiç ölçeklenmedi.** İlk yük testinde replica sayısı 1'de kaldı, `kubectl get hpa` çıktısı
-`cpu: <unknown>` gösterdi.
+**1. HPA hiç ölçeklenmedi.** İlk yük testinde replica sayısı 1'de kaldı, `kubectl get hpa` çıktısı  `cpu: <unknown>` gösterdi. `kubectl describe pod` çıktısında liveness probe hatası ve 4 restart görüldü. 
 
-*Teşhis:* `kubectl describe pod` → liveness probe fail ve 4 restart. Tek pod'a kapasitesinin 10 katı
-istek gitmiş, istekler sınırsız birikmiş, `/health` de bu kuyruğun arkasında kalmış. Pod unready
-olunca metriği HPA'ya gitmemiş.
+HPA CPU metriğini alamadığı için scale-up gerçekleşmedi. Aynı anda tek pod aşırı yük altında kaldı; health endpoint cevap veremeyince liveness probe restart döngüsüne girdi ve servis kapasitesi daha da düştü.
 
-*Ders:* HPA'nın çalışması için pod'un ready kalması şart. Yük altında sağlık kontrolünü kaybeden
-servis ölçeklenemez.
+Çözüm olarak Probe timeout'ları gevşetildi.
 
-*Çözüm:* Probe timeout'ları gevşetildi + yük profili rampalı hale getirildi.
+**2. 10 pod açıldı ama gecikme düzelmedi.** p99 plato boyunca 4,8 saniyede kaldı. Toplam yük
+saniyede 36 istekti, 10 pod'un bunu rahat karşılaması gerekirdi.
 
-**2. 10 pod açıldı ama gecikme düzelmedi.** p99 plato boyunca 4,8 saniyede kaldı, oysa toplam yük
-saniyede 36 istekti — 10 pod'un rahat karşılaması gerekirdi.
+Pod bazında CPU ve istek sayısı sorgulandığında dağılımın bozuk olduğu görüldü: bir pod 497m ile
+limitindeydi, üç pod ise 0m, yani hiç istek almamıştı.
 
-*Teşhis:* Pod bazında CPU ve istek sorgusu. Bir pod 497m (limitinde), üçü 0m — hiç istek almamış.
+Sebebi k6'nın HTTP bağlantılarını yeniden kullanması (keep-alive). Kubernetes Service L4 seviyesinde çalışıyor ve dağıtımı istek bazında değil bağlantı bazında yapıyor. Test başlarken tek pod olduğu için bütün bağlantılar ona kuruldu. HPA 9 pod daha açtı ama mevcut bağlantılar taşınmadı.
 
-*Sebep:* k6 HTTP bağlantılarını yeniden kullanıyor (keep-alive). Kubernetes Service L4 seviyesinde
-çalışıyor ve dağıtımı **bağlantı bazında** yapıyor, istek bazında değil. Test başlarken tek pod
-vardı, bütün bağlantılar ona kuruldu; HPA 9 pod daha açtı ama mevcut bağlantılar taşınmadı.
+`noConnectionReuse: true` ile tekrar çalıştırıldığında trafik normal dağıtıldı ve p95 4.590 ms'den 217 ms'ye indi. 
 
-*Kanıt:* `noConnectionReuse: true` ile tekrar çalıştırıldı → p95 **4.590 ms → 217 ms** (21 kat).
+**3. HPA 10 replica'ya çıkmıyordu.**
 
-*Ders:* Ölçekleme çalışıyordu; çalışmayan şey yük dağıtımıydı.
+Replica sayısı 4-7 arasında salınıyordu. Önce yük artırılarak çözülmeye çalışıldı ama işe yaramadı: 100 → 200 → 250 kullanıcı denemeleri 4 → 7 → 5 → 6 pod verdi. ramping-vus closed-loop çalıştığı için VU sayısını artırmak doğrudan request rate’i artırmadı. Servis yavaşladıkça her VU cevabı daha uzun bekledi ve throughput plato yaptı. Bu yüzden CPU yükü 10 replica gerektirecek seviyeye çıkmadı. 
 
-**3. HPA 10 replica'ya çıkmıyordu.** 4-7 arasında salınıyordu.
-
-*Teşhis:* Yük artırarak çözmeye çalışmak işe yaramadı (100 → 200 → 250 kullanıcı, sonuç 4 → 7 →
-5 → 6). Kapalı çevrim yük modelinde kullanıcı arttıkça gecikme de arttığı için saniyedeki istek
-sayısı sabit kalıyordu. HPA'nın formülü yazılınca doğru kol göründü:
-
-```
-istenen pod = toplam CPU tüketimi / (pod request x HPA hedefi)
-```
-
-*Çözüm:* Payı (yük) değil paydayı değiştirmek — HPA hedefi %50'den %20'ye çekildi.
+Çözüm olarak **ramping-vus** yerine **ramping-arrival-rate** kullanıldı. Böylece trafik kullanıcı sayısıyla değil doğrudan req/s üzerinden kontrol edildi ve servis yavaşlasa bile hedef request rate korunarak HPA’nın 10 replica’ya kadar çıkması sağlandı.
 
 ---
 
@@ -103,29 +64,16 @@ istenen pod = toplam CPU tüketimi / (pod request x HPA hedefi)
 
 | Değişiklik | Neden |
 |---|---|
-| Servisin önüne **L7 katmanı** (Ingress controller / service mesh) | 2. problemin kalıcı çözümü. L4 Service tek başına keep-alive'lı trafiği yeni pod'lara taşıyamıyor. Destekleyici olarak sunucu tarafında bağlantı ömrü sınırı (`max connection age`). |
-| Kampanya öncesi **`minReplicas` yükseltmek** | HPA'nın tepki süresi fiziksel olarak 45-70 saniye (metrics-server 15 sn + HPA 15 sn + pod açılışı ~18 sn). Bu süre boyunca servis yüksek gecikmeyle çalışıyor. Çare HPA'yı hızlandırmak değil, spike'a hazır girmek. |
-| **`scaleDown` penceresini 300 sn'ye** geri almak | Varsayılan değer. 120'ye çekilme sebebi çıkış ve inişin tek grafikte görünmesiydi — demo kararı. |
-| **HPA hedefini SLO'dan türetmek** | %20 burada demo görünürlüğü için seçildi. Gerçek sistemde önce "p95 300 ms altında kalsın" denir, hedef oradan hesaplanır. |
-| **Metrik aralığını 30-60 sn'ye** geri almak | Analiz için 10 saniyeye çekildi. Sürekli 10 saniye gereksiz metrik hacmi demek; olay incelemesinde geçici olarak düşürülür. |
-| Pod başına **istek dağılımı panelini kalıcı izlemeye** almak | 2. problem ancak arayarak bulundu. Sürekli görünür olsa hemen fark edilirdi. |
-| PodDisruptionBudget, ResourceQuota, ayrı namespace, NetworkPolicy | Bu case'de kapsam dışıydı. |
-| Yük testini CI'a bağlamak | k6 `thresholds` zaten var, sürüm öncesi otomatik kapı olarak çalışabilir. |
+| **CPU limitini kaldırmak** | CPU-bound servislerde limit koymamak genel tavsiyedir. Prod ortamında CPU-bound ve latency-sensitive bir servis için CPU limitini kaldırmak değerlendirilebilir. CPU limitleri hard ceiling olarak uygulanır ve limite gelindiğinde container throttling yaşar; bu da boş node kapasitesi olsa bile uygulamanın CPU burst yapmasını engelleyip latency’yi artırabilir. Ancak bunun tüm workload’lara körlemesine uygulanmamalıdır. Multi-tenant ortamlarda sıkı kaynak izolasyonu gerekiyorsa CPU limitinin kalması daha doğru olabilir.|
+| Servisin önüne **L7 katmanı** (Ingress controller / Gateway API) | Uzun ömürlü keep-alive bağlantılarında Kubernetes Service seviyesindeki bağlantı bazlı dağıtım nedeniyle yeni pod’ların trafiğe geç dahil olması mümkündür. Prod ortamında HTTP-aware bir Gateway/Proxy kullanılarak istemci ve backend bağlantıları ayrıştırılabilir ve yeni replica’lara trafiğin daha dengeli dağıtılması sağlanabilir. |
+| **`minReplicas` değeri** | Kampanyalar gibi öngörülebilir trafik artışlarında minReplicas değeri kampanya başlamadan önce geçici olarak yükseltilebilir. HPA trafik oluştuktan sonra tepki verdiği için yeni pod’ların ayağa kalkması, readiness kontrollerini geçmesi ve JVM’in ısınması sırasında kısa süreli kapasite açığı oluşabilir. |
+| **`scaleDown` penceresi** geri almak | Prod ortamında daha uzun tutularak trafikteki kısa süreli düşüşlerde pod sayısının hemen azaltılması engellenir ve gereksiz scale up/down döngüleri önlenir. Özellikle JVM warm-up süresi olan servislerde, yeni açılmış kapasitenin çok hızlı geri kapatılmaması daha kararlı bir davranış sağlar. |
+| **HPA hedefinin SLO'dan türetilmesi** | %20 burada demo görünürlüğü için seçildi. Prod ortamda HPA hedefi sabit ve rastgele bir CPU yüzdesi olarak seçilmemelidir. Yük testleriyle latency ve hata oranının SLO sınırlarını aşmaya başladığı CPU seviyesi belirlenmeli, HPA hedefi bu seviyenin altında güvenli bir pay bırakacak şekilde ayarlanmalıdır. Böylece ölçekleme kararı SLO hedefleriyle ilişkilendirilmiş olur. |
+| Yük testi | Yük testi, gerçek kullanıcı davranışına ve beklenen trafik artışlarına yakın senaryolarla yapılmalıdır. |
+| **Grafana kimlik bilgisini values dosyasından çıkarmak** | Şu an `adminPassword: admin` values dosyasında duruyor. Local demo için bilinçli bir tercih; cluster dışarı açık değil ve değerlendiren kişinin dashboard'a girebilmesi gerekiyor. Prod ortamda bu değer repoya hiç girmez; External Secrets veya Sealed Secrets ile yönetilir, ya da satır tamamen kaldırılıp chart'ın ürettiği rastgele şifre Secret'tan okunur. |
 
 ---
 
 ## 5. Maliyet
 
-| Kalem | Tutar |
-|---|---|
-| Bulut maliyeti | **0 USD** — her şey local `kind` üzerinde çalıştı |
-| Donanım | Docker'a ayrılan 10 CPU / 15,6 GB; tepe kullanım ~7 CPU |
-| Süre | ~6 saat |
-
-**GKE'de yapılsaydı (yaklaşık):** 3 × `e2-standard-2` ≈ 0,20 USD/saat, LoadBalancer ≈ 0,025
-USD/saat, Artifact Registry ihmal edilebilir. 6 saatlik çalışma için **~1,5 USD**; cluster sürekli
-açık bırakılsaydı **ayda ~160 USD**. Fiyatlar bölgeye ve taahhüt indirimlerine göre değişir.
-
-Asıl maliyet kalemi bulut değil, **mühendis saati** oldu: 6 saatin yaklaşık yarısı yük testi
-çalıştırıp sonucunu beklemekle geçti. Prodüksiyonda bu süreyi kısaltmanın yolu testleri CI'a alıp
-paralel çalıştırmak.
+Tek maliyet kalemi efor oldu. 
