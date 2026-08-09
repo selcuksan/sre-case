@@ -1,0 +1,26 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sre-case-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sre-case-app
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 500m'in yarisi = 250m. Pod yari dolunca yenisini ekle.
+          averageUtilization: 50
+  behavior:
+    scaleUp:
+      # Spike'ta bekleme, hemen buyu.
+      stabilizationWindowSeconds: 0
+    scaleDown:
+      # Varsayilan 300 sn. Cikis ve inis tek grafikte gorunsun diye 120'ye cekildi.
+      stabilizationWindowSeconds: 120

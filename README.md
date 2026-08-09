@@ -117,4 +117,64 @@ JVM container limits: availableProcessors=1, maxMemory=371MB, java=21.0.11
 
 GCP yerine kind kullandığımız için Docker Hub'a push ediyoruz.
 
+## Adım 3 — Ölçekleme
+
+```bash
+kubectl apply -f k8s/
+```
+
+[deployment.yaml](k8s/deployment.yaml), [service.yaml](k8s/service.yaml),
+[hpa.yaml](k8s/hpa.yaml).
+
+### Kararlar ve gerekçeleri
+
+| Karar | Gerekçe |
+|---|---|
+| **requests = limits = 500m CPU / 512Mi** | İkisi eşit olunca pod Guaranteed QoS oluyor, HPA'nın gördüğü kullanım oranı da %100'ü aşamıyor. Ayrıca CPU limiti olmasaydı JVM host'un 10 CPU'sunu görürdü; Adım 2'deki `availableProcessors=1` kanıtı ancak limit varken geçerli. |
+| **minReplicas 1, maxReplicas 10** | 10 × 500m = 5 CPU, host'un yarısı. |
+| **Hedef CPU %50** | 500m'in yarısı, yani 250m. 60 saniyede gelen 10 kat trafiğe yetişmek için pay bırakmak gerekiyor; %80 hedefleseydik HPA geç kalırdı. |
+| **scaleUp bekleme süresi 0** | Spike'ta beklemeden büyüsün. |
+| **scaleDown bekleme süresi 120 sn** | Varsayılan 300 sn. 120'ye çektik ki çıkış ve iniş tek grafikte görünsün. |
+| **Probe timeout'ları gevşetildi** | Varsayılan 1 saniye. Yük altında `/health` biraz gecikiyor. |
+
+### İlk denemede ne oldu
+
+İlk yük testinde ölçekleme hiç çalışmadı, tersine pod öldü. Sırasıyla:
+
+1. Tek pod'a, kapasitesinin 10 katı istek bir anda gitti
+2. İstekler sınırsız birikti, `/health` de bu kuyruğun arkasında kaldı
+3. Readiness probe düştü, pod Service'ten çıktı
+4. Liveness probe da düştü, kubelet pod'u öldürdü (4 restart)
+5. Tek pod unready olunca HPA metrik göremedi: `cpu: <unknown>` → **hiç ölçeklenemedi**
+
+**HPA'nın çalışması için pod'un ready kalması şart.** Yük altında sağlık kontrolünü kaybeden bir servis ölçeklenemez.
+
+### Test ve sonuç
+
+[loadtest/spike.js](loadtest/spike.js) — normal trafik, 60 saniyede
+10 kat, sonra normale dönüş.
+
+```bash
+k6 run loadtest/spike.js
+```
+
+Kullanıcı sayısıyla pod sayısı arasındaki bağ: 20 kullanıcı 1 pod'u %50 dolduruyor, 10 katı olan
+200 kullanıcı da 10 pod eder. Ölçüm sonucu:
+
+| | |
+|---|---|
+| Replica seyri | 1 → 2 → 4 → **7**, yük bitince 7 → 5 → 3 → 2 → 1 |
+| Toplam istek | 10.863 |
+| Hata oranı | **%0** |
+| Gecikme (p95) | 5,6 sn |
+| Pending pod | **0** — bütün replica'lar Running/Ready |
+| Node dağılımı | Pod'lar iki worker'a da yerleşti |
+
+Ölçekleme hem yukarı hem aşağı çalışıyor ve hiçbir pod Pending'de kalmıyor.
+
+Tepe noktada 10 değil 7 pod'a çıkıldı. Sebebi HPA değil, yük modeli: k6'nın sanal kullanıcıları
+cevabı beklemeden yeni istek göndermiyor. Servis yavaşlayınca gönderilen istek sayısı da düşüyor,
+dolayısıyla CPU talebi 7 pod seviyesinde dengeye geliyor. 10 pod'u görmek için kullanıcı sayısını
+artırmak yeterli.
+
 
