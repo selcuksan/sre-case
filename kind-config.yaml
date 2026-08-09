@@ -1,0 +1,20 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sre-case
+
+# Sabit boyutlu "node pool": 2 worker; sadece pod (HPA) olceklenir.
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.32.0
+    extraPortMappings:
+      # Host'tan NodePort'lara dogrudan erisim (Grafana ve uygulama).
+      - containerPort: 30300
+        hostPort: 30300
+        protocol: TCP
+      - containerPort: 30080
+        hostPort: 30080
+        protocol: TCP
+  - role: worker
+    image: kindest/node:v1.32.0
+  - role: worker
+    image: kindest/node:v1.32.0
