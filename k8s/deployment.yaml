@@ -17,11 +17,27 @@ spec:
     spec:
       containers:
         - name: app
-          image: selcuksan/sre-case-app:0.4.0
+          image: selcuksan/sre-case-app:0.5.0
           # Image kind load ile node'lara yuklendi, Docker Hub'a gitmesine gerek yok.
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+          env:
+            # Case'in istedigi service.name bu.
+            - name: OTEL_SERVICE_NAME
+              value: sre-case-app
+            # Uygulama tek adres biliyor; dagitimi Collector yapiyor.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector-opentelemetry-collector.monitoring.svc:4317
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: grpc
+            - name: OTEL_TRACES_EXPORTER
+              value: otlp
+            - name: OTEL_METRICS_EXPORTER
+              value: otlp
+            # Case log toplanmasini istemiyor.
+            - name: OTEL_LOGS_EXPORTER
+              value: none
           # requests = limits: pod Guaranteed QoS olur, HPA'nin gordugu kullanim orani %100'u asamaz.
           # CPU limiti ayrica JVM'in cgroup limitini okumasini saglar (availableProcessors=1).
           resources:

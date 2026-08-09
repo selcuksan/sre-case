@@ -1,0 +1,30 @@
+grafana:
+  adminPassword: admin
+  service:
+    type: NodePort
+    nodePort: 30300
+  # Tempo datasource'u hazir gelsin, Grafana'da elle eklemeyelim.
+  additionalDataSources:
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      url: http://tempo.monitoring.svc:3200
+      access: proxy
+  # Chart ~30 hazir dashboard getiriyor; kendi dashboard'umuz aralarinda kaybolmasin.
+  defaultDashboardsEnabled: false
+
+prometheus:
+  prometheusSpec:
+    retention: 6h
+
+# Kullanmadigimiz bilesenler kapali.
+alertmanager:
+  enabled: false
+nodeExporter:
+  enabled: false
+defaultRules:
+  create: false
+
+# kube-state-metrics acik kaliyor: HPA replica metrikleri oradan geliyor.
+kube-state-metrics:
+  enabled: true

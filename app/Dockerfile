@@ -11,7 +11,13 @@ RUN mvn -q -B package -DskipTests
 FROM eclipse-temurin:21-jre
 WORKDIR /app
 COPY --from=build /build/target/*.jar app.jar
+
+# OpenTelemetry Java agent. Kod degisikligi gerektirmeden HTTP ve JVM metrikleri
+# ile trace uretir. Surum sabit.
+ARG OTEL_AGENT_VERSION=2.30.0
+ADD https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v${OTEL_AGENT_VERSION}/opentelemetry-javaagent.jar /app/opentelemetry-javaagent.jar
+
 EXPOSE 8080
 # MaxRAMPercentage: heap'i container memory limitinin yuzdesi olarak belirler.
 # Sabit -Xmx yazsaydik limit degistiginde image'i yeniden build etmek gerekirdi.
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-javaagent:/app/opentelemetry-javaagent.jar", "-jar", "app.jar"]

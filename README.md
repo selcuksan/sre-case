@@ -177,4 +177,81 @@ cevabı beklemeden yeni istek göndermiyor. Servis yavaşlayınca gönderilen is
 dolayısıyla CPU talebi 7 pod seviyesinde dengeye geliyor. 10 pod'u görmek için kullanıcı sayısını
 artırmak yeterli.
 
+## Adım 4 — Observability (OpenTelemetry)
+
+```bash
+./scripts/monitoring.sh up     # Prometheus + Grafana + Tempo + OTel Collector
+./scripts/monitoring.sh down
+```
+
+Grafana: http://localhost:30300 (admin / admin)
+
+### Akış
+
+```
+Uygulama (OTel Java agent)
+   |
+   +-- trace + metrik --OTLP push--> OTel Collector
+                                          |
+                                          +-- trace --OTLP push--> Tempo
+                                          |
+                                          +-- metrik: :8889/metrics
+                                                          ^
+                                                          | scrape (pull)
+                                                     Prometheus
+                                                          |
+                                                       Grafana
+```
+
+Metrik yolu **pull**: Collector metrikleri kendi portunda yayınlıyor, Prometheus onları scrape
+ediyor. Prometheus'un doğal çalışma şekli bu. Alternatifi olan remote write ile Collector doğrudan
+Prometheus'a yazabilirdi ama remote write'ın asıl amacı veriyi uzun süreli depoya (Thanos, Mimir)
+göndermek; tek bir Prometheus'a push için kullanmak aracı amacı dışında kullanmak olurdu.
+
+Trace yolu **push** olarak kalıyor, çünkü Tempo'da scrape diye bir karşılık yok. Trace zaten olay
+bazlı bir veri, üretildiği anda gönderilmesi gerekiyor.
+
+### Kararlar ve gerekçeleri
+
+| Karar | Gerekçe |
+|---|---|
+| **OTel Java agent (`-javaagent`)** | Kod değişikliği yok. HTTP istekleri, JVM metrikleri ve trace'ler kendiliğinden geliyor. Sürüm [Dockerfile](app/Dockerfile)'da sabitlendi (2.30.0). |
+| **Collector var** | Zorunlu değildi, tercih. İki faydası: Kubernetes özniteliklerini (`k8s.pod.name` vb.) Collector ekliyor, uygulama kendi pod'unun adını bilmek zorunda kalmıyor. Ve uygulama tek adres biliyor — yarın Tempo'yu değiştirsek uygulamayı yeniden deploy etmeye gerek kalmıyor. |
+| **Alloy yerine OTel Collector** | İkisi de aynı işi yapar. Collector'ün config'i düz YAML, Alloy'unki kendi dili. Ayrıca case'in dili OpenTelemetry; satıcı bağımsız olanı seçmek açıklamayı kolaylaştırıyor. |
+| **Tempo tek binary** | Dağıtık kurulum (tempo-distributed) bu ölçek için gereksiz. |
+| **Log toplamıyoruz** | Case istemiyor. `OTEL_LOGS_EXPORTER=none`. |
+| **Gereksiz bileşenler kapalı** | kube-prometheus-stack varsayılanıyla kurulsa Alertmanager, node-exporter, ~100 alarm kuralı ve ~30 dashboard geliyordu. Hiçbirini kullanmıyoruz, kapattık. Açık kalanlar: Prometheus, Grafana, kube-state-metrics. |
+| **kube-state-metrics açık** | HPA'nın replica sayısını Grafana'da çizebilmemiz onun metriklerine bağlı. |
+
+### Neden `resource_to_telemetry_conversion`
+
+Collector metrikleri yayınlarken Kubernetes özniteliklerini varsayılan olarak ayrı bir
+`target_info` metriğine koyuyor, metriğin kendi etiketlerine değil. Bu haliyle Grafana'da pod
+bazında kırılım yapılamıyor. [values-otel-collector.yaml](monitoring/values-otel-collector.yaml)'da
+bu ayarı açtık, öznitelikler metrik etiketi haline geldi.
+
+### Doğrulama
+
+`service.name` ve Kubernetes öznitelikleri her iki sinyalde de geliyor.
+
+Metrik tarafı (Prometheus, `jvm_cpu_count` etiketleri):
+
+```
+service_name        = sre-case-app
+k8s_pod_name        = sre-case-app-7cb95f8c66-rh5tv
+k8s_namespace_name  = default
+k8s_node_name       = sre-case-worker
+k8s_deployment_name = sre-case-app
+```
+
+Trace tarafı (Tempo'da mevcut etiketler):
+
+```
+service.name, k8s.pod.name, k8s.namespace.name, k8s.node.name,
+k8s.deployment.name, k8s.container.name, k8s.replicaset.name
+```
+
+Agent uygulamanın açılışını 2,4 saniyeden 5,6 saniyeye çıkardı. Liveness probe'un 20 saniyelik
+başlangıç gecikmesinin içinde kaldığı için bir değişiklik gerekmedi.
+
 

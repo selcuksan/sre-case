@@ -2,7 +2,7 @@
 set -euo pipefail
 
 IMAGE="selcuksan/sre-case-app"
-VERSION="0.4.0"
+VERSION="0.5.0"
 CLUSTER_NAME="sre-case"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
