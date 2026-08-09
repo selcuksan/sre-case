@@ -372,4 +372,111 @@ Hiç 5xx yokken bölme işlemi boş sonuç veriyor ve panel "No data" yazıyordu
 anlamına gelse de yanlış okunmaya açık. Sorguya `or vector(0)` ekledik, artık sıfır çiziyor.
 "Hata yok" ile "veri yok" arasındaki fark bir dashboard'da önemli.
 
+## Adım 6 — Analiz
+
+Aşağıdaki sayılar 9 Ağustos 14:53:37'de başlayan testten. Yükün artmaya başladığı an
+(baseline'ın bittiği an) **14:54:22**; tablodaki `t+` değerleri bu ana göre.
+
+Bu analiz için uygulamanın metrik gönderme aralığını 60 saniyeden 10 saniyeye çektik
+(`OTEL_METRIC_EXPORT_INTERVAL`). 60 saniyelik çözünürlükle "kaç saniye sonra" sorusu
+cevaplanamıyordu.
+
+```
+saat      t+     ready   rps     p99
+14:54:30    +8s     2     0.0       -
+14:55:30   +68s     2    10.9    4.15s
+14:56:00   +98s     9    18.7    6.71s   <- tepe
+14:56:30  +128s    10    27.8    6.13s
+14:57:30  +188s    10    36.3    0.10s   <- yuk hala tepede, gecikme normale dondu
+14:58:00  +218s    10    40.0    0.15s
+15:00:30  +368s     7     3.0    0.05s
+15:01:00  +398s     2     1.7    0.07s
+15:02:30  +488s     1       -       -
+```
+
+### 1. Yük başladıktan kaç saniye sonra ilk yeni pod trafik almaya başladı?
+
+**8 saniye** — ama bu sayı yanıltıcı, açıklaması gerekiyor.
+
+Kubernetes API'sinden okunan kesin zaman damgaları:
+
+| Pod | Oluşturuldu | Ready oldu |
+|---|---|---|
+| 2. pod | 14:54:13 | **14:54:30** |
+| 3-6. pod | 14:55:13 | 14:55:31 |
+| 7-9. pod | 14:55:28 | 14:55:46 |
+| 10. pod | 14:55:43 | **14:56:01** |
+
+İkinci pod yük artmaya başlamadan **9 saniye önce** oluşturulmuş. Sebebi: baseline yükü
+(saniyede 4 istek = 100m CPU) HPA hedefimizin tam üstünde. Yani HPA daha spike gelmeden
+ölçeklenmeye başlamış.
+
+Bu bir ölçüm kusuru — baseline'ın hedefin altında olması gerekirdi. Doğru okunması gereken sayılar:
+
+- **Spike'tan sonraki ilk pod grubu:** 14:55:31'de Ready → yük artmaya başladıktan **69 saniye** sonra
+- **Tam kapasiteye (10 pod) ulaşma:** 14:56:01 → **99 saniye**
+
+Pod'un Ready olması ile trafik alması arasında fark yok denecek kadar az; Ready olan pod Service
+endpoint'lerine ekleniyor ve hemen istek almaya başlıyor.
+
+**Bu gecikme neden var:** metrics-server 15 saniyede bir metrik topluyor, HPA 15 saniyede bir
+bakıyor, pod'un açılıp Ready olması ~18 saniye (JVM + OTel agent). Toplamda 45-70 saniyelik bir
+tepki süresi kaçınılmaz. Kampanya senaryosunda bu süre boyunca servis yüksek gecikmeyle çalışıyor.
+Çaresi HPA'yı hızlandırmak değil, **kampanya öncesi `minReplicas`'ı elle yükseltmek**.
+
+### 2. Bu süre boyunca p99 ne oldu, istek kaybı yaşandı mı?
+
+**p99 tepe değeri 6,71 saniye** (t+98s, pod'lar hâlâ açılırken).
+
+Seyri: 4,15s → **6,71s** → 6,13s → **0,10s**. Yani pod'lar tamamlandıktan yaklaşık 60 saniye sonra
+normale döndü ve yük hâlâ tepedeyken (saniyede 36-40 istek) 0,10-0,15 saniyede kaldı.
+
+**İstek kaybı yaşanmadı.** k6 raporu:
+
+```
+http_req_failed ... 0.00%  0 out of 8446
+✓ 'rate<0.05' rate=0.00%
+```
+
+İstemci tarafındaki rakam esas alındı; sunucu metrikleri sadece sunucuya ulaşan istekleri görür,
+bağlantı kurulamadan düşen istek orada görünmez. k6 tarafında da sıfır.
+
+Yani sistem **yavaşladı ama kaybetmedi**. İstekler kuyrukta bekledi, hiçbiri düşmedi. Bir bankacılık
+servisi için 6,7 saniyelik p99 kabul edilemez olurdu; ama hata almak yerine beklemek, hata almaktan
+iyidir.
+
+### 3. Yük düştükten sonra replica sayısı ne kadar sürede geri indi?
+
+Yük 14:58:22'de normale döndü (saniyede 40'tan 4'e).
+
+| Saat | Replica |
+|---|---|
+| 15:00:30 | 10 → 7 |
+| 15:01:00 | 7 → 2 |
+| 15:02:30 | 2 → **1** |
+
+- **İlk küçülmeye kadar: 128 saniye.** Bu tesadüf değil — HPA'ya verdiğimiz
+  `scaleDown.stabilizationWindowSeconds: 120` değeri. HPA yük düştükten sonra 2 dakika bekleyip
+  emin olmadan pod kapatmıyor.
+- **Tamamen 1 replica'ya inmesi: 248 saniye** (~4 dakika).
+
+Küçülme büyümeden yavaş, ve bu **kasıtlı**. Yanlış pod açmanın maliyeti birkaç dakikalık fazladan
+kaynak; yanlış pod kapatmanın maliyeti ise trafik geri geldiğinde servisin çökmesi. HPA bu yüzden
+büyürken atik, küçülürken temkinli davranacak şekilde ayarlanır.
+
+Varsayılan değer 300 saniye. Biz 120'ye çektik ki test penceresinde iniş de görünsün. Prodüksiyonda
+300'de bırakılmalı.
+
+### Özet
+
+| Soru | Cevap |
+|---|---|
+| İlk yeni pod (spike sonrası) | 69 saniye |
+| 10 pod'a ulaşma | 99 saniye |
+| p99 tepe | 6,71 saniye |
+| p99 normale dönüş | Yük tepedeyken 0,10 saniye |
+| İstek kaybı | Yok (8.446 istekte 0 hata) |
+| İlk küçülme | 128 saniye (120 sn bekleme penceresi) |
+| 1 replica'ya dönüş | 248 saniye |
+
 

@@ -38,6 +38,10 @@ spec:
             # Case log toplanmasini istemiyor.
             - name: OTEL_LOGS_EXPORTER
               value: none
+            # Varsayilan 60 saniye. Olcekleme davranisini saniye seviyesinde analiz
+            # edebilmek icin 10 saniyeye cekildi.
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "10000"
           # requests = limits: pod Guaranteed QoS olur, HPA'nin gordugu kullanim orani %100'u asamaz.
           # CPU limiti ayrica JVM'in cgroup limitini okumasini saglar (availableProcessors=1).
           resources:

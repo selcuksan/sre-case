@@ -1,34 +1,72 @@
 {
   "uid": "sre-case",
   "title": "SRE Case — Yuk Altinda Otomatik Olcekleme",
-  "tags": ["sre-case"],
+  "tags": [
+    "sre-case"
+  ],
   "timezone": "browser",
   "editable": true,
   "schemaVersion": 39,
   "refresh": "10s",
-  "time": { "from": "now-30m", "to": "now" },
-  "templating": { "list": [] },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
   "panels": [
     {
       "type": "row",
       "title": "1. Trafik — yuk geldi",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
     },
     {
       "type": "timeseries",
       "title": "Istek hizi (RPS)",
       "description": "Saniyedeki istek sayisi, endpoint kirilimli. /health satiri kubelet probe'larindan geliyor.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (http_route) (rate(http_server_request_duration_seconds_count{service_name=\"sre-case-app\"}[1m]))",
           "legendFormat": "{{http_route}}"
         }
@@ -38,29 +76,61 @@
       "type": "timeseries",
       "title": "Gecikme p50 / p95 / p99",
       "description": "Yuk gelince p95 once sicrar (tek pod yetisemiyor), HPA pod ekledikce geri duser. Hikayenin 'latency duzeldi' kismi bu panelde gorunur.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
       "fieldConfig": {
-        "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 2
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket{service_name=\"sre-case-app\", http_route=\"/work\"}[1m])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{service_name=\"sre-case-app\", http_route=\"/work\"}[1m])))",
           "legendFormat": "p95"
         },
         {
           "refId": "C",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{service_name=\"sre-case-app\", http_route=\"/work\"}[1m])))",
           "legendFormat": "p99"
         }
@@ -70,17 +140,40 @@
       "type": "timeseries",
       "title": "Hata orani",
       "description": "5xx donen isteklerin toplam istege orani. Olcekleme dogru calisiyorsa bu cizgi sifirda kalir.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 9 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
       "fieldConfig": {
-        "defaults": { "unit": "percentunit", "min": 0, "custom": { "fillOpacity": 20, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "(sum(rate(http_server_request_duration_seconds_count{service_name=\"sre-case-app\", http_response_status_code=~\"5..\"}[1m])) or vector(0)) / clamp_min(sum(rate(http_server_request_duration_seconds_count{service_name=\"sre-case-app\"}[1m])), 0.001)",
           "legendFormat": "5xx orani"
         }
@@ -89,35 +182,74 @@
     {
       "type": "row",
       "title": "2. Olcekleme — pod acildi",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      }
     },
     {
       "type": "timeseries",
       "title": "Replica: istenen vs hazir",
       "description": "HPA'nin istedigi replica sayisi ile gercekten Ready olan pod sayisi. Iki cizgi arasindaki bosluk, podun acilip henuz trafik almaya hazir olmadigi suredir. Hazir cizgisi istenen cizgisini yakaliyorsa hicbir pod Pending'de kalmamis demektir.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
       "fieldConfig": {
-        "defaults": { "unit": "short", "min": 0, "decimals": 0, "custom": { "fillOpacity": 10, "lineWidth": 2, "lineInterpolation": "stepAfter" } },
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "lineInterpolation": "stepAfter"
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max"] } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max"
+          ]
+        }
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"default\", horizontalpodautoscaler=\"sre-case-app\"}",
           "legendFormat": "HPA istenen"
         },
         {
           "refId": "B",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "kube_deployment_status_replicas_ready{namespace=\"default\", deployment=\"sre-case-app\"}",
           "legendFormat": "Ready pod"
         },
         {
           "refId": "C",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "kube_horizontalpodautoscaler_spec_max_replicas{namespace=\"default\", horizontalpodautoscaler=\"sre-case-app\"}",
           "legendFormat": "maxReplicas"
         }
@@ -127,70 +259,218 @@
       "type": "timeseries",
       "title": "HPA CPU: mevcut vs hedef",
       "description": "HPA'nin karar verdigi deger. Mevcut cizgi hedefin (%20) uzerine ciktiginda replica sayisi artar, altina indiginde 120 saniye bekleyip azalir.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
       "fieldConfig": {
-        "defaults": { "unit": "percent", "min": 0, "custom": { "fillOpacity": 10, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "hedef" },
+            "matcher": {
+              "id": "byName",
+              "options": "hedef"
+            },
             "properties": [
-              { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } },
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
             ]
           }
         ]
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "kube_horizontalpodautoscaler_status_target_metric{namespace=\"default\", horizontalpodautoscaler=\"sre-case-app\", metric_name=\"cpu\"}",
           "legendFormat": "mevcut"
         },
         {
           "refId": "B",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "kube_horizontalpodautoscaler_spec_target_metric{namespace=\"default\", horizontalpodautoscaler=\"sre-case-app\", metric_name=\"cpu\"}",
           "legendFormat": "hedef"
         }
       ]
     },
     {
+      "type": "timeseries",
+      "title": "Pod basina istek hizi",
+      "description": "Her podun saniyede aldigi istek. Iki soruyu cevaplar: (1) yeni bir pod ne zaman trafik almaya basladi -- cizgisinin sifirdan kalktigi an, (2) yuk podlara esit dagiliyor mu -- cizgiler birbirine yakin olmali. Bir cizgi tepede digerleri sifirdaysa yuk dagilmiyor demektir.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 0,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (k8s_pod_name) (rate(http_server_request_duration_seconds_count{service_name=\"sre-case-app\", http_route=\"/work\"}[1m]))",
+          "legendFormat": "{{k8s_pod_name}}"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "3. Container",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      }
     },
     {
       "type": "timeseries",
       "title": "Pod basina CPU kullanimi (limit ile)",
       "description": "Her podun gercek CPU tuketimi ve container limiti (500m). Cizgiler limite dayaniyorsa pod doludur; HPA'nin yeni pod eklemesi beklenir.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
       "fieldConfig": {
-        "defaults": { "unit": "none", "min": 0, "custom": { "fillOpacity": 5, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 5,
+            "lineWidth": 2
+          }
+        },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "limit" },
+            "matcher": {
+              "id": "byName",
+              "options": "limit"
+            },
             "properties": [
-              { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } },
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
             ]
           }
         ]
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"default\", pod=~\"sre-case-app-.*\", container=\"app\"}[1m]))",
           "legendFormat": "{{pod}}"
         },
         {
           "refId": "B",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "max(kube_pod_container_resource_limits{namespace=\"default\", pod=~\"sre-case-app-.*\", container=\"app\", resource=\"cpu\"})",
           "legendFormat": "limit"
         }
@@ -199,23 +479,55 @@
     {
       "type": "row",
       "title": "4. JVM",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      }
     },
     {
       "type": "timeseries",
       "title": "Heap kullanimi",
       "description": "Pod basina kullanilan heap. Ust sinir MaxRAMPercentage=75 ile container memory limitinin %75'i (~371 MB).",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 34 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
       "fieldConfig": {
-        "defaults": { "unit": "bytes", "min": 0, "custom": { "fillOpacity": 10, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (k8s_pod_name) (jvm_memory_used_bytes{service_name=\"sre-case-app\", jvm_memory_type=\"heap\"})",
           "legendFormat": "{{k8s_pod_name}}"
         }
@@ -225,17 +537,44 @@
       "type": "timeseries",
       "title": "GC'de gecen sure",
       "description": "Saniyede GC'ye harcanan sure. Yuksek deger CPU'nun ise degil temizlige gittigi anlamina gelir.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 34 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 42
+      },
       "fieldConfig": {
-        "defaults": { "unit": "s", "min": 0, "custom": { "fillOpacity": 10, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ]
+        }
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (k8s_pod_name) (rate(jvm_gc_duration_seconds_sum{service_name=\"sre-case-app\"}[1m]))",
           "legendFormat": "{{k8s_pod_name}}"
         }
