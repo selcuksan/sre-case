@@ -5,7 +5,6 @@ metadata:
   labels:
     app: sre-case-app
 spec:
-  # Baslangic degeri. Bundan sonrasini HPA yonetiyor.
   replicas: 1
   selector:
     matchLabels:
@@ -18,12 +17,10 @@ spec:
       containers:
         - name: app
           image: selcuksan/sre-case-app:0.5.0
-          # Image kind load ile node'lara yuklendi, Docker Hub'a gitmesine gerek yok.
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           env:
-            # Case'in istedigi service.name bu.
             - name: OTEL_SERVICE_NAME
               value: sre-case-app
             # Uygulama tek adres biliyor; dagitimi Collector yapiyor.
@@ -35,15 +32,12 @@ spec:
               value: otlp
             - name: OTEL_METRICS_EXPORTER
               value: otlp
-            # Case log toplanmasini istemiyor.
             - name: OTEL_LOGS_EXPORTER
               value: none
             # Varsayilan 60 saniye. Olcekleme davranisini saniye seviyesinde analiz
             # edebilmek icin 10 saniyeye cekildi.
             - name: OTEL_METRIC_EXPORT_INTERVAL
               value: "10000"
-          # requests = limits: pod Guaranteed QoS olur, HPA'nin gordugu kullanim orani %100'u asamaz.
-          # CPU limiti ayrica JVM'in cgroup limitini okumasini saglar (availableProcessors=1).
           resources:
             requests:
               cpu: 500m
@@ -51,9 +45,6 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
-          # Varsayilan timeout 1 saniye. Yuk altinda /health de gecikince pod unready oluyor,
-          # unready podun metrigi HPA'ya gitmiyor ve olcekleme duruyor. Olculdu: varsayilan
-          # ayarlarla ayni testte %11 hata ve restart, asagidaki ayarlarla %0 hata.
           readinessProbe:
             httpGet:
               path: /health

@@ -5,8 +5,6 @@ image:
   repository: otel/opentelemetry-collector-contrib
 
 presets:
-  # k8s.pod.name, k8s.namespace.name, k8s.node.name gibi oznitelikleri Collector ekler.
-  # Gereken RBAC'i chart kendisi olusturur.
   kubernetesAttributes:
     enabled: true
 
@@ -22,8 +20,6 @@ serviceMonitor:
   enabled: true
   metricsEndpoints:
     - port: prometheus
-  # Prometheus Operator varsayilan olarak sadece kendi release etiketini tasiyan
-  # ServiceMonitor'leri topluyor. Bu satir olmazsa scrape hic baslamaz.
   extraLabels:
     release: kube-prometheus-stack
 
@@ -41,8 +37,6 @@ config:
         insecure: true
     prometheus:
       endpoint: 0.0.0.0:8889
-      # k8s.pod.name gibi resource oznitelikleri metrik etiketi olsun.
-      # Varsayilanda ayri bir target_info metrigine gidiyor ve grafikte pod kirilimi yapilamiyor.
       resource_to_telemetry_conversion:
         enabled: true
 

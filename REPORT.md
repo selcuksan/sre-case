@@ -42,7 +42,13 @@ HPA CPU metriğini alamadığı için scale-up gerçekleşmedi. Aynı anda tek p
 
 Çözüm olarak Probe timeout'ları gevşetildi.
 
-**2. 10 pod açıldı ama gecikme düzelmedi.** p99 plato boyunca 4,8 saniyede kaldı. Toplam yük
+**2. HPA 10 replica'ya çıkmıyordu.**
+
+Replica sayısı 4-7 arasında salınıyordu. Önce yük artırılarak çözülmeye çalışıldı ama işe yaramadı: 100 → 200 → 250 kullanıcı denemeleri 4 → 7 → 5 → 6 pod verdi. ramping-vus closed-loop çalıştığı için VU sayısını artırmak doğrudan request rate’i artırmadı. Servis yavaşladıkça her VU cevabı daha uzun bekledi. Bu yüzden CPU yükü 10 replica gerektirecek seviyeye çıkmadı. 
+
+Çözüm olarak **ramping-vus** yerine **ramping-arrival-rate** kullanıldı. Böylece servis yavaşlasa bile hedef request rate korunarak HPA’nın 10 replica’ya kadar çıkması sağlandı.
+
+**3. 10 pod açıldı ama gecikme azalmadı.** p99 plato boyunca 4,8 saniyede kaldı. Toplam yük
 saniyede 36 istekti, 10 pod'un bunu rahat karşılaması gerekirdi.
 
 Pod bazında CPU ve istek sayısı sorgulandığında dağılımın bozuk olduğu görüldü: bir pod 497m ile
@@ -51,12 +57,6 @@ limitindeydi, üç pod ise 0m, yani hiç istek almamıştı.
 Sebebi k6'nın HTTP bağlantılarını yeniden kullanması (keep-alive). Kubernetes Service L4 seviyesinde çalışıyor ve dağıtımı istek bazında değil bağlantı bazında yapıyor. Test başlarken tek pod olduğu için bütün bağlantılar ona kuruldu. HPA 9 pod daha açtı ama mevcut bağlantılar taşınmadı.
 
 `noConnectionReuse: true` ile tekrar çalıştırıldığında trafik normal dağıtıldı ve p95 4.590 ms'den 217 ms'ye indi. 
-
-**3. HPA 10 replica'ya çıkmıyordu.**
-
-Replica sayısı 4-7 arasında salınıyordu. Önce yük artırılarak çözülmeye çalışıldı ama işe yaramadı: 100 → 200 → 250 kullanıcı denemeleri 4 → 7 → 5 → 6 pod verdi. ramping-vus closed-loop çalıştığı için VU sayısını artırmak doğrudan request rate’i artırmadı. Servis yavaşladıkça her VU cevabı daha uzun bekledi ve throughput plato yaptı. Bu yüzden CPU yükü 10 replica gerektirecek seviyeye çıkmadı. 
-
-Çözüm olarak **ramping-vus** yerine **ramping-arrival-rate** kullanıldı. Böylece trafik kullanıcı sayısıyla değil doğrudan req/s üzerinden kontrol edildi ve servis yavaşlasa bile hedef request rate korunarak HPA’nın 10 replica’ya kadar çıkması sağlandı.
 
 ---
 

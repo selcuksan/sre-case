@@ -3,13 +3,12 @@ import http from 'k6/http';
 export const options = {
   // Her istek yeni baglanti kurar. Kubernetes Service L4 seviyesinde baglanti bazinda
   // dagitim yapiyor; keep-alive acikken HPA yeni pod acsa bile mevcut baglantilar eski
-  // poda gitmeye devam ediyor ve yuk dagilmiyor. Prod'da cozum bu degil, servisin onune
-  // istek bazinda dagitan bir L7 katmani (Ingress / service mesh / Gateway API) koymaktir.
+  // poda gitmeye devam ediyor ve yuk dagilmiyor. 
   noConnectionReuse: true,
 
   scenarios: {
     spike: {
-      // Acik cevrim: saniyede sabit istek. Gercek trafik boyle davranir, servis
+      // open-loop: saniyede sabit istek. Gercek trafik boyle davranir, servis
       // yavasladi diye kullanicilar gelmeyi birakmaz.
       executor: 'ramping-arrival-rate',
       startRate: 4,

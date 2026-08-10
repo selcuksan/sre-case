@@ -1,7 +1,6 @@
 # Case
 
-Kubernetes üzerinde çalışan bir Java servisinin yük altında HPA ile ölçeklenmesi, OpenTelemetry ile
-izlenmesi ve bu ölçekleme davranışının Grafana üzerinden gösterilmesi.
+Kubernetes üzerinde çalışan bir Java servisinin yük altında HPA ile ölçeklenmesi, OpenTelemetry ile izlenmesi ve bu ölçekleme davranışının Grafana üzerinden gösterilmesi.
 
 Tasarım kararları, karşılaşılan problemler ve analiz: [REPORT.md](REPORT.md)
 
@@ -50,8 +49,7 @@ kubectl get pods -l app=sre-case-app -w
 ```
 
 **Grafana:** http://localhost:30300/d/sre-case — kullanıcı `admin`, şifre `admin`
-(local demo kimlik bilgisi, [values dosyasında](monitoring/values-kube-prometheus-stack.yaml)
-açıkça duruyor; gerçek ortamda Secret yöneticisinden gelir).
+(local demo kimlik bilgisi).
 
 Dashboard'da göreceğin: istek hızı yükselir, gecikme önce sıçrar, HPA replica sayısını 1'den 10'a
 çıkarır, gecikme yük hâlâ tepedeyken düşer, yük bitince replica sayısı 1'e iner.
