@@ -64,7 +64,7 @@ Sebebi k6'nın HTTP bağlantılarını yeniden kullanması (keep-alive). Kuberne
 
 | Değişiklik | Neden |
 |---|---|
-| **CPU limitini kaldırmak** | CPU-bound servislerde limit koymamak genel tavsiyedir. Prod ortamında CPU-bound ve latency-sensitive bir servis için CPU limitini kaldırmak değerlendirilebilir. CPU limitleri hard ceiling olarak uygulanır ve limite gelindiğinde container throttling yaşar; bu da boş node kapasitesi olsa bile uygulamanın CPU burst yapmasını engelleyip latency’yi artırabilir. Ancak bunun tüm workload’lara körlemesine uygulanmamalıdır. Multi-tenant ortamlarda sıkı kaynak izolasyonu gerekiyorsa CPU limitinin kalması daha doğru olabilir.|
+| **CPU limitini kaldırmak** | CPU-bound servislerde limit koymamak değerlendirilebilir. Prod ortamında CPU-bound ve latency-sensitive bir servis için CPU limitini kaldırmak değerlendirilebilir. CPU limitleri hard ceiling olarak uygulanır ve limite gelindiğinde container throttling yaşar; bu da boş node kapasitesi olsa bile uygulamanın CPU burst yapmasını engelleyip latency’yi artırabilir. Ancak bunun tüm workload’lara körlemesine uygulanmamalıdır. Multi-tenant ortamlarda sıkı kaynak izolasyonu gerekiyorsa CPU limitinin kalması daha doğru olabilir.|
 | Servisin önüne **L7 katmanı** (Ingress controller / Gateway API) | Uzun ömürlü keep-alive bağlantılarında Kubernetes Service seviyesindeki bağlantı bazlı dağıtım nedeniyle yeni pod’ların trafiğe geç dahil olması mümkündür. Prod ortamında HTTP-aware bir Gateway/Proxy kullanılarak istemci ve backend bağlantıları ayrıştırılabilir ve yeni replica’lara trafiğin daha dengeli dağıtılması sağlanabilir. |
 | **`minReplicas` değeri** | Kampanyalar gibi öngörülebilir trafik artışlarında minReplicas değeri kampanya başlamadan önce geçici olarak yükseltilebilir. HPA trafik oluştuktan sonra tepki verdiği için yeni pod’ların ayağa kalkması, readiness kontrollerini geçmesi ve JVM’in ısınması sırasında kısa süreli kapasite açığı oluşabilir. |
 | **`scaleDown` penceresi** geri almak | Prod ortamında daha uzun tutularak trafikteki kısa süreli düşüşlerde pod sayısının hemen azaltılması engellenir ve gereksiz scale up/down döngüleri önlenir. Özellikle JVM warm-up süresi olan servislerde, yeni açılmış kapasitenin çok hızlı geri kapatılmaması daha kararlı bir davranış sağlar. |
@@ -76,4 +76,4 @@ Sebebi k6'nın HTTP bağlantılarını yeniden kullanması (keep-alive). Kuberne
 
 ## 5. Maliyet
 
-Tek maliyet kalemi efor oldu. 
+Tek maliyet kalemi efor oldu. Yaklaşık olarak 10-12 saat.
