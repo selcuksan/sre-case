@@ -20,24 +20,32 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+          # Bu degiskenleri uygulama kodu degil, Dockerfile'daki OTel Java agent'i okur.
+          # Kod tarafinda tek satir telemetri kodu yok.
           env:
+            # Tempo ve Grafana'da servisin gorunen adi.
             - name: OTEL_SERVICE_NAME
               value: sre-case-app
             # Uygulama tek adres biliyor; dagitimi Collector yapiyor.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://otel-collector-opentelemetry-collector.monitoring.svc:4317
+            # Collector'da sadece grpc receiver'i acik; bu ikisi eslesmek zorunda.
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: grpc
             - name: OTEL_TRACES_EXPORTER
               value: otlp
+            # JVM, GC ve HTTP metrikleri agent tarafindan uretilir.
             - name: OTEL_METRICS_EXPORTER
               value: otlp
+            # Log toplanmiyor; Collector'daki "logs: null" ile ayni karar.
             - name: OTEL_LOGS_EXPORTER
               value: none
-            # Varsayilan 60 saniye. Olcekleme davranisini saniye seviyesinde analiz
-            # edebilmek icin 10 saniyeye cekildi.
+            # Milisaniye. Varsayilan 60 saniye; olcekleme davranisini saniye
+            # seviyesinde analiz edebilmek icin 10 saniyeye cekildi.
             - name: OTEL_METRIC_EXPORT_INTERVAL
               value: "10000"
+          # requests == limits -> Guaranteed QoS, olcum boyunca ongorulebilir davranis.
+          # Ayrica HPA'nin paydasi requests.cpu'dur: %20 hedefi = 100m demek.
           resources:
             requests:
               cpu: 500m
@@ -45,6 +53,8 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          # Readiness: "su an trafik alabilir miyim?" Fail ederse pod Service
+          # endpoint listesinden cikar ama yasamaya devam eder. Hizli tepki verir.
           readinessProbe:
             httpGet:
               path: /health
@@ -52,6 +62,10 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 3
+          # Liveness: "kilitlendim mi?" Fail ederse container oldurulur.
+          # initialDelaySeconds: JVM + Spring acilisi bitmeden oldurulmesin diye.
+          # 15s x 6 = ~90 saniye tolerans: yuk altinda CPU throttle olup /health
+          # yavasladiginda saglikli pod bosuna restart edilmesin.
           livenessProbe:
             httpGet:
               path: /health

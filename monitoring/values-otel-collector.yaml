@@ -8,7 +8,6 @@ presets:
   kubernetesAttributes:
     enabled: true
 
-# Prometheus'un scrape edecegi port.
 ports:
   prometheus:
     enabled: true
